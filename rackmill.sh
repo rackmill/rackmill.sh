@@ -416,7 +416,7 @@ apt_sources_prepare() {
     done
     step "--------------------------------------------------"
     read -rp "Review the above files. Type 'y' to proceed anyway, anything else to exit: " confirm
-    if [[ "$confirm" != "y" ]]; then
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
       error "Operator did not confirm non-canonical APT sources. Exiting."
       exit 1
     fi
@@ -427,7 +427,7 @@ apt_sources_prepare() {
   cat "$canonical_file"
   step "--------------------------------------------------"
   read -rp "Is this APT source config correct? Type 'y' to proceed, anything else to exit: " confirm
-  if [[ "$confirm" != "y" ]]; then
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
 
     step "Cool. We'll stop now. Here's the canonical config for $canonical_file:\n"
     canonical_sources
@@ -502,7 +502,7 @@ apt_sources_apply() {
     canonical_sources
     step "--------------------------------------------------"
     read -rp "Are you sure you want to continue? Type 'y' to proceed, anything else to exit: " confirm
-    if [[ "$confirm" != "y" ]]; then
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
       error "After making the necessary changes, re-run this script. No automatic changes have been made."
       exit 1
     fi
@@ -625,7 +625,7 @@ set_host() {
     cat /etc/hosts
     step "--------------------------------------------------"
     read -rp "Is this /etc/hosts config correct? Type 'y' to proceed, anything else to exit: " confirm
-    if [[ "$confirm" != "y" ]]; then
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
       error "Operator did not confirm /etc/hosts changes. Exiting."
       exit 1
     fi
@@ -680,7 +680,7 @@ cleanup_prepare() {
   # Prompt for confirmation
   step "--------------------------------------------------"
   read -rp "Do you want to proceed with the cleanup? This is irreversible! Type 'y' to proceed, anything else to exit: " confirm
-  if [[ "$confirm" != "y" ]]; then
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     error "Cleanup operation cancelled by operator. Exiting."
     exit 1
   fi
