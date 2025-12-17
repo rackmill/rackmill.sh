@@ -236,9 +236,15 @@ setup() {
 
   # Display network interfaces and routes for operator visibility
   step "Displaying network interfaces:"
-  ip link show
-  ip route show
-  ip addr show
+  if command -v ip &> /dev/null; then
+    ip link show
+    ip route show
+    ip addr show
+  else
+    # Fallback for older systems (e.g., Ubuntu 14.04) without iproute2
+    ifconfig -a 2>/dev/null || true
+    route -n 2>/dev/null || true
+  fi
   cat /etc/resolv.conf || true
   cat /etc/network/interfaces || true
 
@@ -591,13 +597,19 @@ rhel_repos_prepare() {
   if [[ "$OS_DISTRO" == "centos" && "$VERSION_MAJOR" -eq 7 ]]; then
     step "CentOS 7 is EOL - checking if vault.centos.org migration is needed ..."
     
-    # Check if repos still point to mirror.centos.org (which no longer works)
-    if grep -rq "mirror.centos.org\|mirrorlist.centos.org" /etc/yum.repos.d/*.repo 2>/dev/null; then
+    # Check if any repo files point to mirror.centos.org (which no longer works)
+    if grep -rlq "mirror.centos.org\|mirrorlist.centos.org" /etc/yum.repos.d/ 2>/dev/null; then
       step "Migrating CentOS 7 repos to vault.centos.org ..."
       
-      # Disable mirrorlist and enable baseurl pointing to vault
-      sed -i 's/^mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-*.repo
-      sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo
+      # Process all .repo files that contain mirror.centos.org references
+      for repo_file in /etc/yum.repos.d/*.repo; do
+        [[ -f "$repo_file" ]] || continue
+        if grep -q "mirror.centos.org\|mirrorlist.centos.org" "$repo_file" 2>/dev/null; then
+          sed -i 's/^mirrorlist=/#mirrorlist=/g' "$repo_file"
+          sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' "$repo_file"
+          step "  Updated: $repo_file"
+        fi
+      done
       
       step "CentOS 7 repos migrated to vault.centos.org."
     else
@@ -1029,12 +1041,22 @@ configure() {
     if [[ -f /etc/locale.gen ]]; then
       sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
     fi
-    locale-gen en_AU.UTF-8
+    if command -v locale-gen &> /dev/null; then
+      locale-gen en_AU.UTF-8
+    else
+      # Fallback for minimal systems without locale-gen
+      localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+    fi
     update-locale LANG=en_AU.UTF-8
 
     step "Regenerating SSH host keys ..."
     rm -f /etc/ssh/ssh_host_*
-    dpkg-reconfigure openssh-server
+    if dpkg -l openssh-server &> /dev/null; then
+      dpkg-reconfigure openssh-server
+    else
+      # Fallback if openssh-server not installed via dpkg (minimal image)
+      ssh-keygen -A
+    fi
   fi
 
   step "Configuration changes applied. Locale and hostname won't take effect until the next session restart."
