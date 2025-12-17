@@ -1180,23 +1180,28 @@ post_run_action() {
     return
   fi
 
-  step "Choose post-run action:"
-  echo "  [1] Reboot (clears rackmill.sh and history, then reboots)"
-  echo "  [2] Shutdown (clears rackmill.sh and history, then powers off)"
-  echo "  [3] Skip (do nothing)"
-  read -rp "Select 1/2/3: " choice
+  read -rp "Run cleanup now (rm -f rackmill.sh .bash_history && history -c)? [Y/n]: " cleanup_choice
+  if [[ -z "$cleanup_choice" || "$cleanup_choice" =~ ^[Yy]$ ]]; then
+    step "Clearing artifacts ..."
+    if ! rm -f rackmill.sh .bash_history || ! history -c; then
+      step "Cleanup command did not complete; please run it manually."
+    fi
+  else
+    step "Skipped cleanup."
+  fi
 
-  case "$choice" in
-    1)
-      step "Clearing artifacts and rebooting ..."
-      rm -f rackmill.sh .bash_history && history -c && reboot
+  read -rp "Power action? [r]=reboot, [s]=shutdown, anything else=skip: " power_choice
+  case "$power_choice" in
+    r|R)
+      step "Rebooting ..."
+      reboot
       ;;
-    2)
-      step "Clearing artifacts and shutting down ..."
-      rm -f rackmill.sh .bash_history && history -c && shutdown -h now
+    s|S)
+      step "Shutting down ..."
+      shutdown -h now
       ;;
     *)
-      step "No action selected. You can run \`rm -f rackmill.sh .bash_history && history -c && reboot\` or \`... && shutdown -h now\` manually."
+      step "No power action selected. You can run \`rm -f rackmill.sh .bash_history && history -c && reboot\` or \`... && shutdown -h now\` manually."
       ;;
   esac
 }
