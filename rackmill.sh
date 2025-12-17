@@ -1174,15 +1174,15 @@ report() {
 #
 # Note: history -c only works in the current shell, not from a script subshell.
 # The only reliable way to clear history is to:
-#   1. Delete ~/.bash_history
-#   2. Kill the parent shell (prevents it from writing in-memory history on exit)
+#   1. Delete ~/.bash_history (and all users' history files)
+#   2. Kill ALL ancestor shells (login shell, sudo, etc.) to prevent history save
 #   3. Immediately reboot/shutdown
 post_run_action() {
   # Skip if stdin is not a TTY (non-interactive run)
   if [[ ! -t 0 ]]; then
     step "Reminder: Run the following command before finalizing the image:"
     step "(Kills your shell to prevent history being saved, then reboots)"
-    echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$; reboot"
+    echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & reboot"
     return
   fi
 
@@ -1190,23 +1190,23 @@ post_run_action() {
   case "$choice" in
     r|R)
       step "Clearing artifacts and rebooting ..."
-      rm -f rackmill.sh .bash_history ~/.bash_history
-      # Kill the parent shell so it can't save history, then reboot
-      # (backgrounding ensures reboot runs even after parent dies)
-      kill -9 $PPID &
-      reboot
+      # Delete history files for all users
+      rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
+      # Kill the entire process tree up to init (kills login shell, sudo, etc.)
+      # This prevents any shell from saving in-memory history on exit
+      kill -9 -1 &
+      reboot -f
       ;;
     s|S)
       step "Clearing artifacts and shutting down ..."
-      rm -f rackmill.sh .bash_history ~/.bash_history
-      # Kill the parent shell so it can't save history, then shutdown
-      kill -9 $PPID &
+      rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
+      kill -9 -1 &
       shutdown -h now
       ;;
     *)
-      step "Skipped. (Kills your shell to prevent history being saved, then reboots)"
-      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$; reboot"
-      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$; shutdown -h now"
+      step "Skipped.  To clear history and reboot or shutdown, run one of the following commands:")"
+      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & reboot"
+      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & shutdown -h now"
       ;;
   esac
 }
