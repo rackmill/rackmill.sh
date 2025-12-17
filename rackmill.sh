@@ -182,7 +182,7 @@ EOF
     fi
   else
     # Ubuntu sources
-    if [[ "${VERSION_ID:-}" =~ ^23\.10|24\. ]]; then
+    if [[ "${VERSION_ID:-}" =~ ^23\.10|^2[4-9]\.|^[3-9][0-9]\. ]]; then
       # DEB822 format for Ubuntu 23.10+
       cat <<EOF
 Types: deb
@@ -417,7 +417,7 @@ apt_sources_prepare() {
     fi
   else
     # Ubuntu
-    if [[ "${VERSION_ID:-}" =~ ^23\.10|24\. ]]; then
+    if [[ "${VERSION_ID:-}" =~ ^23\.10|^2[4-9]\.|^[3-9][0-9]\. ]]; then
       canonical_file="/etc/apt/sources.list.d/ubuntu.sources"
       is_deb822=true
     else
