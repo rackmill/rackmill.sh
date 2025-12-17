@@ -1164,7 +1164,7 @@ report() {
     done
   fi
 
-  step "Reminder: For best security, run \`rm rackmill.sh .bash_history; history -c;\` in your interactive shell."
+  step "Reminder: For best security, run \`rm -f rackmill.sh .bash_history && history -c && reboot\` in your interactive shell."
 }
 
 # Main conductor function that orchestrates the setup process.
