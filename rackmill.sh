@@ -1168,40 +1168,42 @@ report() {
       echo "  - $backup"
     done
   fi
-
-  step "Reminder: For best security, run \`rm -f rackmill.sh .bash_history && history -c && reboot\` in your interactive shell (or \`rm -f rackmill.sh .bash_history && history -c && shutdown -h now\` to power off)."
 }
 
 # Offer an interactive choice to reboot or shutdown after cleaning history.
+#
+# Note: history -c only works in the current shell, not from a script subshell.
+# The only reliable way to clear history is to:
+#   1. Delete ~/.bash_history
+#   2. Kill the parent shell with SIGKILL (prevents it from writing in-memory history)
+#   3. Immediately reboot/shutdown
 post_run_action() {
   # Skip if stdin is not a TTY (non-interactive run)
   if [[ ! -t 0 ]]; then
-    step "Reminder: Run \`rm -f rackmill.sh .bash_history && history -c && reboot\` (or \`... && shutdown -h now\`) before finalizing the image."
+    step "Reminder: Run the following command before finalizing the image:"
+    step "(Running the "exec" command prevents in-memory history from being saved.)"
+    echo "rm -f rackmill.sh ~/.bash_history; exec reboot"
     return
   fi
 
-  read -rp "Run cleanup now (rm -f rackmill.sh .bash_history && history -c)? [Y/n]: " cleanup_choice
-  if [[ -z "$cleanup_choice" || "$cleanup_choice" =~ ^[Yy]$ ]]; then
-    step "Clearing artifacts ..."
-    if ! rm -f rackmill.sh .bash_history || ! history -c; then
-      step "Cleanup command did not complete; please run it manually."
-    fi
-  else
-    step "Skipped cleanup."
-  fi
-
-  read -rp "Power action? [r]=reboot, [s]=shutdown, anything else=skip: " power_choice
-  case "$power_choice" in
+  read -rp "Clean up and power off? [r] = Reboot, [s] = Shutdown, anything else = Skip " choice
+  case "$choice" in
     r|R)
-      step "Rebooting ..."
-      reboot
+      step "Clearing artifacts and rebooting ..."
+      rm -f rackmill.sh .bash_history ~/.bash_history
+      # Running the "exec" command prevents in-memory history from being saved."
+      exec reboot
       ;;
     s|S)
-      step "Shutting down ..."
-      shutdown -h now
+      step "Clearing artifacts and shutting down ..."
+      rm -f rackmill.sh .bash_history ~/.bash_history
+      # Running the "exec" command prevents in-memory history from being saved."
+      exec shutdown -h now
       ;;
     *)
-      step "No power action selected. You can run \`rm -f rackmill.sh .bash_history && history -c && reboot\` or \`... && shutdown -h now\` manually."
+      step "Skipped. (The 'exec' command replaces your shell, so history can't be saved.)"
+      echo "rm -f rackmill.sh ~/.bash_history; exec reboot"
+      echo "rm -f rackmill.sh ~/.bash_history; exec shutdown -h now"
       ;;
   esac
 }
