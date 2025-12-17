@@ -1204,7 +1204,7 @@ post_run_action() {
       shutdown -h now
       ;;
     *)
-      step "Skipped.  To clear history and reboot or shutdown, run one of the following commands:")"
+      step "Skipped. To clear history and reboot or shutdown, run one of the following commands:"
       echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & reboot"
       echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & shutdown -h now"
       ;;
