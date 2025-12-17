@@ -46,52 +46,54 @@ CODENAME=""
 # Decision flags
 APT_SOURCES_CHANGES_REQUIRED=false
 
-# File patterns for cleanup (used by cleanup_prepare and cleanup_apply)
-PATTERNS=(
-  # Machine identifiers - should be cleared in templates
-  "/etc/machine-id"                # truncate: ensures unique machine id per clone
-  "/var/lib/dbus/machine-id"       # truncate: dbus machine id (may duplicate /etc)
-  "/var/lib/systemd/machine-id"    # truncate: systemd machine id (some systems)
+# Patterns for files to TRUNCATE during cleanup (contents cleared, file remains)
+TRUNCATE_PATTERNS=(
+  "/etc/machine-id"
+  "/var/lib/dbus/machine-id"
+  "/var/lib/systemd/machine-id"
+)
 
-  # System randomness/state - clear so guests regenerate
-  "/var/lib/systemd/random-seed"   # remove: avoid reusing VM randomness across images
+# Patterns for files/directories to REMOVE during cleanup
+REMOVE_PATTERNS=(
+  # System randomness/state
+  "/var/lib/systemd/random-seed"
 
-  # SSH host keys - always remove and regenerate on first boot
-  "/etc/ssh/ssh_host_*"            # remove files matching host key prefixes
+  # SSH host keys - regenerated on first boot
+  "/etc/ssh/ssh_host_*"
 
   # Root-specific files
-  "/root/.ssh/authorized_keys"     # remove: prevent baked-in root SSH keys
-  "/root/.wget-hsts"               # remove: wget HSTS cache
-  "/root/.Xauthority"              # remove: X auth tokens for root
-  "/root/.bash_history"            # remove: root shell history
-  "/root/.cache"                   # remove directory: caches
-  "/root/.nano"                    # remove editor state
-  "/root/snap"                     # remove: Snap user data for root
-  "/root/.gnupg"                   # remove: root GPG keyrings
-  "/root/.viminfo"                 # remove: root Vim editor history
+  "/root/.ssh/authorized_keys"
+  "/root/.wget-hsts"
+  "/root/.Xauthority"
+  "/root/.bash_history"
+  "/root/.cache"
+  "/root/.nano"
+  "/root/snap"
+  "/root/.gnupg"
+  "/root/.viminfo"
 
   # Per-user files under /home
-  "/home/*/.ssh/authorized_keys"   # remove: user SSH authorized keys
-  "/home/*/.wget-hsts"             # remove: per-user wget HSTS
-  "/home/*/.Xauthority"            # remove: per-user X auth tokens
-  "/home/*/.bash_history"          # remove: per-user shell history
-  "/home/*/snap"                   # remove: Snap user data for all users
-  "/home/*/.gnupg"                 # remove: per-user GPG keyrings
-  "/home/*/.viminfo"               # remove: per-user Vim editor history
+  "/home/*/.ssh/authorized_keys"
+  "/home/*/.wget-hsts"
+  "/home/*/.Xauthority"
+  "/home/*/.bash_history"
+  "/home/*/snap"
+  "/home/*/.gnupg"
+  "/home/*/.viminfo"
 
   # Temp space
-  "/tmp/*"                         # remove: user/system temp files (entries under /tmp)
+  "/tmp/*"
 
-  # All system logs - remove all logs for a clean template
-  "/var/log/*"                     # remove: all system logs
+  # All system logs
+  "/var/log/*"
 
-  # All runtime logs - remove all runtime logs for a clean template
-  "/run/log/*"                     # remove: all runtime logs
+  # All runtime logs
+  "/run/log/*"
 
   # RHEL-specific: DNF/YUM cache and history
-  "/var/cache/dnf/*"               # remove: DNF package cache
-  "/var/lib/dnf/history*"          # remove: DNF transaction history
-  "/var/lib/rpm/__db*"             # remove: RPM database cache files
+  "/var/cache/dnf/*"
+  "/var/lib/dnf/history*"
+  "/var/lib/rpm/__db*"
 )
 
 # Canonical sources generator for this release.
@@ -225,7 +227,7 @@ setup() {
   # Ensure running as root
   if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root. Exiting."
-    # exit 1
+    exit 1
   fi
   step "Confirmed running as root."
 
@@ -270,20 +272,20 @@ setup() {
       # Try to extract codename from VERSION or PRETTY_NAME if UBUNTU_CODENAME is empty.
       CODENAME="${UBUNTU_CODENAME:-}"
       if [[ -z "$CODENAME" ]]; then
-        # Try to extract from VERSION or PRETTY_NAME
+        # Try to extract from VERSION or PRETTY_NAME (POSIX-compatible)
         if [[ -n "${VERSION:-}" ]]; then
-          CODENAME="$(echo "$VERSION" | grep -oP '(?<=\()[^)]+' | awk '{print tolower($1)}')"
+          CODENAME="$(echo "$VERSION" | sed -n 's/.*[^(]*[[:space:]]\([^)]*\)).*/\1/p' | tr '[:upper:]' '[:lower:]' | awk '{print $1}')"
         elif [[ -n "${PRETTY_NAME:-}" ]]; then
-          CODENAME="$(echo "$PRETTY_NAME" | grep -oP '(?<=\()[^)]+' | awk '{print tolower($1)}')"
+          CODENAME="$(echo "$PRETTY_NAME" | sed -n 's/.*[^(]*[[:space:]]\([^)]*\)).*/\1/p' | tr '[:upper:]' '[:lower:]' | awk '{print $1}')"
         fi
       fi
     elif [[ "$OS_TYPE" == "debian" ]]; then
       # Debian uses VERSION_CODENAME
       CODENAME="${VERSION_CODENAME:-}"
       if [[ -z "$CODENAME" ]]; then
-        # Try to extract from VERSION field as fallback
+        # Try to extract from VERSION field as fallback (POSIX-compatible)
         if [[ -n "${VERSION:-}" ]]; then
-          CODENAME="$(echo "$VERSION" | grep -oP '(?<=\()[^)]+' | awk '{print tolower($1)}')"
+          CODENAME="$(echo "$VERSION" | sed -n 's/.*[^(]*[[:space:]]\([^)]*\)).*/\1/p' | tr '[:upper:]' '[:lower:]' | awk '{print $1}')"
         fi
       fi
     elif [[ "$OS_TYPE" == "rhel" ]]; then
@@ -608,6 +610,20 @@ rhel_repos_prepare() {
 update_packages() {
   section "Updating and Upgrading Packages"
 
+  # Basic network connectivity check
+  step "Checking network connectivity ..."
+  local test_host="1.1.1.1"
+  if ! ping -c 1 -W 5 "$test_host" > /dev/null 2>&1; then
+    error "Network connectivity check failed (cannot reach $test_host)."
+    error "Please verify network configuration before continuing."
+    read -rp "Continue anyway? Type 'y' to proceed, anything else to exit: " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+      exit 1
+    fi
+  else
+    step "Network connectivity verified."
+  fi
+
   if [[ "$OS_TYPE" == "rhel" ]]; then
     # RHEL-family: use dnf
     step "Cleaning DNF cache ..."
@@ -761,26 +777,21 @@ cleanup_prepare() {
 
   step "Scanning filesystem for sensitive data to clean ..."
 
-  # Example logic to populate CLEANUP_FILES and CLEANUP_TRUNCATE
-  for pattern in "${PATTERNS[@]}"; do
-    if [[ "$pattern" == *"truncate"* ]]; then
-      CLEANUP_TRUNCATE+=("${pattern% *}")
-    else
-      CLEANUP_FILES+=("${pattern% *}")
-    fi
-  done
+  # Populate arrays from the defined pattern arrays
+  CLEANUP_FILES=("${REMOVE_PATTERNS[@]}")
+  CLEANUP_TRUNCATE=("${TRUNCATE_PATTERNS[@]}")
 
-  if [[ ${#CLEANUP_FILES[@]} > 0 ]]; then
-    step "The following files will be removed:"
-    for file in "${CLEANUP_FILES[@]}"; do
-      echo "  - $file"
+  if [[ ${#CLEANUP_FILES[@]} -gt 0 ]]; then
+    step "The following file patterns will be removed:"
+    for pattern in "${CLEANUP_FILES[@]}"; do
+      echo "  - $pattern"
     done
   fi
 
-  if [[ ${#CLEANUP_TRUNCATE[@]} > 0 ]]; then
+  if [[ ${#CLEANUP_TRUNCATE[@]} -gt 0 ]]; then
     step "The following files will be truncated:"
-    for file in "${CLEANUP_TRUNCATE[@]}"; do
-      echo "  - $file"
+    for pattern in "${CLEANUP_TRUNCATE[@]}"; do
+      echo "  - $pattern"
     done
   fi
 
@@ -813,28 +824,34 @@ cleanup_prepare() {
 cleanup_apply() {
   section "Applying Cleanup Actions"
 
-  # Remove files
-  if [[ ${#CLEANUP_FILES[@]} > 0 ]]; then
+  # Remove files matching patterns
+  if [[ ${#CLEANUP_FILES[@]} -gt 0 ]]; then
     step "Removing files ..."
-    for file in "${CLEANUP_FILES[@]}"; do
-      if compgen -G "$file" > /dev/null; then
-        rm -rf $file
+    for pattern in "${CLEANUP_FILES[@]}"; do
+      if compgen -G "$pattern" > /dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        rm -rf $pattern
+        step "Removed: $pattern"
       else
-        step "No files found matching $file. Skipping."
+        step "No files found matching $pattern. Skipping."
       fi
     done
   fi
 
-  # Truncate files
-  if [[ ${#CLEANUP_TRUNCATE[@]} > 0 ]]; then
+  # Truncate files (clear contents but keep file)
+  if [[ ${#CLEANUP_TRUNCATE[@]} -gt 0 ]]; then
     step "Truncating files ..."
-    for file in "${CLEANUP_TRUNCATE[@]}"; do
-      if compgen -G "$file" > /dev/null; then
-        for f in $file; do
-          echo " : > \"$f\""
+    for pattern in "${CLEANUP_TRUNCATE[@]}"; do
+      if compgen -G "$pattern" > /dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        for f in $pattern; do
+          if [[ -f "$f" ]]; then
+            : > "$f"
+            step "Truncated: $f"
+          fi
         done
       else
-        step "No files found matching $file. Skipping."
+        step "No files found matching $pattern. Skipping."
       fi
     done
   fi
@@ -882,8 +899,18 @@ configure() {
     step "Available keyboard layouts can be listed with: localectl list-keymaps"
     read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
     if [[ -n "$keymap" ]]; then
-      localectl set-keymap "$keymap"
-      step "Keyboard layout set to $keymap."
+      # Validate keymap exists before applying
+      if localectl list-keymaps | grep -qx "$keymap"; then
+        localectl set-keymap "$keymap"
+        step "Keyboard layout set to $keymap."
+      else
+        error "Invalid keymap: $keymap. Run 'localectl list-keymaps' to see available options."
+        read -rp "Continue with current keyboard layout? Type 'y' to continue, anything else to exit: " cont
+        if [[ "$cont" != "y" && "$cont" != "Y" ]]; then
+          exit 1
+        fi
+        step "Keeping current keyboard layout."
+      fi
     else
       step "Keeping current keyboard layout."
     fi
