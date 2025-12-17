@@ -2,7 +2,7 @@
 set -eEuo pipefail
 
 # =============================================
-# Rackmill Ubuntu/Debian Setup Script
+# Rackmill Ubuntu/Debian/RHEL Setup Script
 # Operators will observe the script as it runs and respond to any errors or prompts during execution.
 # Always allow the operator to see what is happening. Allow standard console output to be visible at all times.
 # All functions should use `section()` and `step()` for logging, and avoid silent failures. 
@@ -37,7 +37,8 @@ declare -a CLEANUP_FILES=()
 declare -a CLEANUP_TRUNCATE=()
 
 # OS version information (populated by setup())
-OS_TYPE=""          # "ubuntu" or "debian"
+OS_TYPE=""          # "ubuntu", "debian", or "rhel"
+OS_DISTRO=""        # specific distro: "ubuntu", "debian", "almalinux", "rocky", "ol", "centos", "cloudlinux", "rhel"
 VERSION_ID=""
 VERSION_MAJOR=""
 CODENAME=""
@@ -86,6 +87,11 @@ PATTERNS=(
 
   # All runtime logs - remove all runtime logs for a clean template
   "/run/log/*"                     # remove: all runtime logs
+
+  # RHEL-specific: DNF/YUM cache and history
+  "/var/cache/dnf/*"               # remove: DNF package cache
+  "/var/lib/dnf/history*"          # remove: DNF transaction history
+  "/var/lib/rpm/__db*"             # remove: RPM database cache files
 )
 
 # Canonical sources generator for this release.
@@ -196,15 +202,16 @@ EOF
 # Ensure preconditions are met and detect OS release.
 #
 # Verifies the script is running as root, outputs network info, and detects the OS type
-# (Ubuntu or Debian), version, and codename. Sets global variables OS_TYPE, VERSION_ID,
-# VERSION_MAJOR, and CODENAME for use by other functions.
+# (Ubuntu, Debian, or RHEL-family), version, and codename. Sets global variables OS_TYPE,
+# OS_DISTRO, VERSION_ID, VERSION_MAJOR, and CODENAME for use by other functions.
 #
 # Supported versions:
 #   Ubuntu: 14.04+ (Trusty and newer)
 #   Debian: 9+ (Stretch and newer)
+#   RHEL-family: 8+ (AlmaLinux, Rocky Linux, Oracle Linux, CentOS Stream, CloudLinux, RHEL)
 #
 # Outputs:
-#   Sets OS_TYPE, VERSION_ID, VERSION_MAJOR, CODENAME globals
+#   Sets OS_TYPE, OS_DISTRO, VERSION_ID, VERSION_MAJOR, CODENAME globals
 #   Logs detected OS information via section() and step()
 #
 # Exit status:
@@ -236,14 +243,26 @@ setup() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
     
-    # Detect OS type
-    OS_TYPE="${ID:-}"
-    if [[ "$OS_TYPE" != "ubuntu" && "$OS_TYPE" != "debian" ]]; then
-      error "Unsupported OS detected: $OS_TYPE. This script supports Ubuntu and Debian only. Exiting."
-      exit 2
-    fi
-    
+    # Detect OS type and distro
+    OS_DISTRO="${ID:-}"
     VERSION_ID="${VERSION_ID:-}"
+    
+    # Map distro to OS type family
+    case "$OS_DISTRO" in
+      ubuntu)
+        OS_TYPE="ubuntu"
+        ;;
+      debian)
+        OS_TYPE="debian"
+        ;;
+      almalinux|rocky|ol|centos|cloudlinux|rhel)
+        OS_TYPE="rhel"
+        ;;
+      *)
+        error "Unsupported OS detected: $OS_DISTRO. This script supports Ubuntu, Debian, and RHEL-family (AlmaLinux, Rocky, Oracle Linux, CentOS Stream, CloudLinux, RHEL 8+). Exiting."
+        exit 2
+        ;;
+    esac
     
     # Extract codename based on OS type
     if [[ "$OS_TYPE" == "ubuntu" ]]; then
@@ -267,10 +286,20 @@ setup() {
           CODENAME="$(echo "$VERSION" | grep -oP '(?<=\()[^)]+' | awk '{print tolower($1)}')"
         fi
       fi
+    elif [[ "$OS_TYPE" == "rhel" ]]; then
+      # RHEL-family uses VERSION_CODENAME if available, otherwise use version number
+      CODENAME="${VERSION_CODENAME:-$VERSION_ID}"
     fi
     
-    if [[ -z "$VERSION_ID" || -z "$CODENAME" ]]; then
-      error "Failed to detect OS version or codename. Exiting."
+    # Validate VERSION_ID is set
+    if [[ -z "$VERSION_ID" ]]; then
+      error "Failed to detect OS version. Exiting."
+      exit 2
+    fi
+    
+    # For Debian/Ubuntu, codename is required
+    if [[ "$OS_TYPE" != "rhel" && -z "$CODENAME" ]]; then
+      error "Failed to detect OS codename. Exiting."
       exit 2
     fi
     
@@ -296,6 +325,12 @@ setup() {
       else
         step "Detected Debian $VERSION_ID ($CODENAME)."
       fi
+    elif [[ "$OS_TYPE" == "rhel" ]]; then
+      if [[ "$VERSION_MAJOR" -lt 8 ]]; then
+        error "$OS_DISTRO $VERSION_ID is not supported. Minimum version: 8. Exiting."
+        exit 2
+      fi
+      step "Detected $OS_DISTRO $VERSION_ID (RHEL-family)."
     fi
   else
     error "/etc/os-release not found. Unable to detect OS. Exiting."
@@ -512,89 +547,161 @@ apt_sources_apply() {
   fi
 }
 
+# Audit RHEL-family yum/dnf repositories.
+#
+# This function displays enabled repositories for RHEL-family systems and prompts
+# the operator to confirm they are correct before proceeding.
+#
+# Supported distributions:
+#   - AlmaLinux 8+
+#   - Rocky Linux 8+
+#   - Oracle Linux 8+
+#   - CentOS Stream 8+
+#   - CloudLinux 8+
+#   - RHEL 8+
+#
+# Outputs:
+#   - Lists all enabled repositories via dnf repolist
+#   - Displays repo files in /etc/yum.repos.d/
+#   - Prompts operator to confirm repos are correct
+#   - Logs progress via step() calls
+#
+# Exit status:
+#   0 if operator confirms repositories are correct
+#   1 if operator declines or on error
+
+rhel_repos_prepare() {
+  section "Auditing RHEL Repositories"
+
+  step "Listing enabled repositories ..."
+  dnf repolist enabled
+
+  step "Repository files in /etc/yum.repos.d/:"
+  ls -la /etc/yum.repos.d/
+
+  step "--------------------------------------------------"
+  read -rp "Are the enabled repositories correct? Type 'y' to proceed, anything else to exit: " confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    error "Operator did not confirm RHEL repositories. Please review /etc/yum.repos.d/ and try again."
+    exit 1
+  fi
+
+  step "RHEL repositories confirmed."
+}
+
 # Update package lists and perform system upgrade.
 #
-# Runs apt-get update, dist-upgrade, autoremove, and autoclean.
-# Performs basic smoke checks to verify package system health.
-# Clears stale indices before updating.
+# For Debian/Ubuntu: Runs apt-get update, dist-upgrade, autoremove, and autoclean.
+# For RHEL-family: Runs dnf clean, check-update, upgrade, and autoremove.
 #
 # For archived Debian releases (9-10), adds --allow-unauthenticated flag
 # since archive.debian.org repositories don't have valid GPG signatures.
 #
 # Outputs:
-#   Standard apt-get console output
+#   Standard package manager console output
 #   Progress messages via section() and step() calls
 #
 # Exit status:
 #   0 on success
-#   Non-zero if apt operations fail
+#   Non-zero if package operations fail
 
-aptdate() {
+update_packages() {
   section "Updating and Upgrading Packages"
 
-  # Determine if we need --allow-unauthenticated for archived releases
-  local apt_flags="-y"
-  if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
-    apt_flags="-y --allow-unauthenticated"
-    step "Note: Using --allow-unauthenticated for archived Debian release (expected for archive.debian.org)"
-  fi
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    # RHEL-family: use dnf
+    step "Cleaning DNF cache ..."
+    dnf clean all
 
-  apt-get autoremove --purge -y
-  apt-get clean
-  
-  # Clean all apt cache to prevent corruption errors (especially for archived repos)
-  step "Cleaning APT cache ..."
-  rm -rf /var/lib/apt/lists/*
-  mkdir -p /var/lib/apt/lists/partial
-  
-  # Run apt-get update, retry once if it fails (common with archived repos)
-  step "Running apt-get update ..."
-  set +e  # Temporarily disable exit-on-error for retry logic
-  apt-get update
-  local update_status=$?
-  set -e  # Re-enable exit-on-error
-  
-  if [[ $update_status -ne 0 ]]; then
-    step "apt-get update failed (exit code: $update_status), cleaning cache and retrying once more ..."
+    step "Checking for updates ..."
+    # dnf check-update returns 100 if updates are available, 0 if none, 1 on error
+    set +e
+    dnf check-update
+    local check_status=$?
+    set -e
+    if [[ $check_status -eq 1 ]]; then
+      error "dnf check-update failed."
+      exit 1
+    fi
+
+    step "Upgrading packages ..."
+    dnf upgrade -y
+
+    step "Removing unused packages ..."
+    dnf autoremove -y
+
+    step "Package update and upgrade completed successfully."
+  else
+    # Debian/Ubuntu: use apt-get
+    # Determine if we need --allow-unauthenticated for archived releases
+    local apt_flags="-y"
+    if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
+      apt_flags="-y --allow-unauthenticated"
+      step "Note: Using --allow-unauthenticated for archived Debian release (expected for archive.debian.org)"
+    fi
+
+    apt-get autoremove --purge -y
+    apt-get clean
+    
+    # Clean all apt cache to prevent corruption errors (especially for archived repos)
+    step "Cleaning APT cache ..."
     rm -rf /var/lib/apt/lists/*
     mkdir -p /var/lib/apt/lists/partial
-    apt-get clean
-    sleep 2  # Brief pause before retry
-    apt-get update  # If this fails, the script will exit due to set -e
-  fi
-  
-  apt-get dist-upgrade $apt_flags
-  apt-get autoremove --purge $apt_flags
-  apt-get autoclean
+    
+    # Run apt-get update, retry once if it fails (common with archived repos)
+    step "Running apt-get update ..."
+    set +e  # Temporarily disable exit-on-error for retry logic
+    apt-get update
+    local update_status=$?
+    set -e  # Re-enable exit-on-error
+    
+    if [[ $update_status -ne 0 ]]; then
+      step "apt-get update failed (exit code: $update_status), cleaning cache and retrying once more ..."
+      rm -rf /var/lib/apt/lists/*
+      mkdir -p /var/lib/apt/lists/partial
+      apt-get clean
+      sleep 2  # Brief pause before retry
+      apt-get update  # If this fails, the script will exit due to set -e
+    fi
+    
+    apt-get dist-upgrade $apt_flags
+    apt-get autoremove --purge $apt_flags
+    apt-get autoclean
 
-  step "Package update and upgrade completed successfully."
+    step "Package update and upgrade completed successfully."
+  fi
 }
 
 # Install cloud-init package.
 #
-# Installs cloud-init on all Ubuntu and Debian systems for template provisioning.
+# Installs cloud-init on all systems for template provisioning.
 # For archived Debian releases (9-10), uses --allow-unauthenticated flag.
+# For RHEL-family, uses dnf.
 #
 # Outputs:
-#   Standard apt-get console output
+#   Standard package manager console output
 #   Progress messages via section() and step() calls
 #
 # Exit status:
 #   0 on success
-#   Non-zero if apt-get install fails (script will exit)
+#   Non-zero if package install fails (script will exit)
 
 cloud_init_install() {
   section "Installing cloud-init"
 
-  # Determine if we need --allow-unauthenticated for archived releases
-  local apt_flags="-y"
-  if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
-    apt_flags="-y --allow-unauthenticated"
-    step "Note: Using --allow-unauthenticated for archived Debian release"
-  fi
-
   step "Installing cloud-init package ..."
-  apt-get install $apt_flags cloud-init
+  
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    dnf install -y cloud-init
+  else
+    # Determine if we need --allow-unauthenticated for archived releases
+    local apt_flags="-y"
+    if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
+      apt_flags="-y --allow-unauthenticated"
+      step "Note: Using --allow-unauthenticated for archived Debian release"
+    fi
+    apt-get install $apt_flags cloud-init
+  fi
 
   step "cloud-init installed successfully."
 }
@@ -747,7 +854,11 @@ cleanup_apply() {
 #   - Sets timezone to Australia/Perth
 #   - Sets locale to en_AU.UTF-8
 #   - Regenerates SSH host keys
-#   - Runs keyboard configuration (dpkg-reconfigure keyboard-configuration)
+#   - Runs keyboard configuration
+#
+# For Debian/Ubuntu: Uses dpkg-reconfigure for keyboard and openssh-server.
+# For RHEL-family: Uses localectl for keyboard and ssh-keygen for host keys.
+#
 # Note: Changes to hostname, locale, and keyboard may require session restart to take full effect.
 #
 # Outputs:
@@ -763,27 +874,64 @@ cleanup_apply() {
 configure() {
   section "Configuring System Settings"
 
-  step "Running keyboard configuration ..."
-  dpkg-reconfigure keyboard-configuration
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    # RHEL-family configuration
+    step "Current keyboard layout:"
+    localectl status
+    
+    step "Available keyboard layouts can be listed with: localectl list-keymaps"
+    read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
+    if [[ -n "$keymap" ]]; then
+      localectl set-keymap "$keymap"
+      step "Keyboard layout set to $keymap."
+    else
+      step "Keeping current keyboard layout."
+    fi
 
-  # Set hostname to "rackmill" and update /etc/hosts
-  set_host
+    # Set hostname
+    set_host
 
-  step "Setting timezone to Australia/Perth ..."
-  timedatectl set-timezone Australia/Perth
-  date # show current date/time for verification
+    step "Setting timezone to Australia/Perth ..."
+    timedatectl set-timezone Australia/Perth
+    date
 
-  step "Setting locale to en_AU.UTF-8 ..."
-  # Ensure en_AU.UTF-8 is uncommented in /etc/locale.gen (Debian requirement)
-  if [[ -f /etc/locale.gen ]]; then
-    sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
+    step "Setting locale to en_AU.UTF-8 ..."
+    # Install langpacks if needed
+    if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
+      step "Installing Australian English language pack ..."
+      dnf install -y glibc-langpack-en || true
+    fi
+    localectl set-locale LANG=en_AU.UTF-8
+
+    step "Regenerating SSH host keys ..."
+    rm -f /etc/ssh/ssh_host_*
+    ssh-keygen -A
+    systemctl restart sshd
+
+  else
+    # Debian/Ubuntu configuration
+    step "Running keyboard configuration ..."
+    dpkg-reconfigure keyboard-configuration
+
+    # Set hostname to "rackmill" and update /etc/hosts
+    set_host
+
+    step "Setting timezone to Australia/Perth ..."
+    timedatectl set-timezone Australia/Perth
+    date # show current date/time for verification
+
+    step "Setting locale to en_AU.UTF-8 ..."
+    # Ensure en_AU.UTF-8 is uncommented in /etc/locale.gen (Debian requirement)
+    if [[ -f /etc/locale.gen ]]; then
+      sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
+    fi
+    locale-gen en_AU.UTF-8
+    update-locale LANG=en_AU.UTF-8
+
+    step "Regenerating SSH host keys ..."
+    rm -f /etc/ssh/ssh_host_*
+    dpkg-reconfigure openssh-server
   fi
-  locale-gen en_AU.UTF-8
-  update-locale LANG=en_AU.UTF-8
-
-  step "Regenerating SSH host keys ..."
-  rm -f /etc/ssh/ssh_host_*
-  dpkg-reconfigure openssh-server
 
   step "Configuration changes applied. Locale and hostname won't take effect until the next session restart."
 }
@@ -832,6 +980,7 @@ journal() {
       skip_journal=true
     fi
   fi
+  # RHEL 8+ always has systemd, no skip needed
   
   if $skip_journal; then
     return 0
@@ -904,9 +1053,17 @@ main() {
   trap 'error "Fatal error occurred. Exiting." ; exit 1' ERR
 
   setup
-  apt_sources_prepare
-  apt_sources_apply
-  aptdate
+  
+  # Route to appropriate package management based on OS type
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    rhel_repos_prepare
+    update_packages
+  else
+    apt_sources_prepare
+    apt_sources_apply
+    update_packages
+  fi
+  
   cloud_init_install
   cleanup_prepare
   cleanup_apply

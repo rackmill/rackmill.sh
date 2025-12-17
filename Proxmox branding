@@ -36,6 +36,32 @@ Ubuntu-18.04-bionic
 Ubuntu-16.04-xenial
 Ubuntu-14.04-trusty
 
+AlmaLinux 9 (Seafoam Ocelot)
+AlmaLinux 8 (Cerulean Leopard)
+Rocky Linux 9 (Blue Onyx)
+Rocky Linux 8 (Green Obsidian)
+Oracle Linux 9
+Oracle Linux 8
+CentOS Stream 9
+CentOS Stream 8
+CloudLinux 9
+CloudLinux 8
+RHEL 9
+RHEL 8
+
+AlmaLinux-9
+AlmaLinux-8
+Rocky-9
+Rocky-8
+Oracle-9
+Oracle-8
+CentOS-Stream-9
+CentOS-Stream-8
+CloudLinux-9
+CloudLinux-8
+RHEL-9
+RHEL-8
+
 
 
 
