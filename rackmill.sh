@@ -684,10 +684,13 @@ update_packages() {
 
     step "Checking for updates ..."
     # check-update returns 100 if updates are available, 0 if none, 1 on error
-    set +e  # Temporarily disable exit-on-error (check-update returns 100 for available updates)
+    # Must disable both exit-on-error AND the ERR trap (due to set -E inheriting traps)
+    set +e
+    trap - ERR
     $PKG_MGR check-update
     local check_status=$?
-    set -e  # Re-enable exit-on-error
+    trap 'error "Fatal error occurred. Exiting."; exit 1' ERR
+    set -e
     if [[ $check_status -eq 1 ]]; then
       error "$PKG_MGR check-update failed."
       exit 1
