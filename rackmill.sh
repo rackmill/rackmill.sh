@@ -1169,7 +1169,36 @@ report() {
     done
   fi
 
-  step "Reminder: For best security, run \`rm -f rackmill.sh .bash_history && history -c && reboot\` in your interactive shell."
+  step "Reminder: For best security, run \`rm -f rackmill.sh .bash_history && history -c && reboot\` in your interactive shell (or \`rm -f rackmill.sh .bash_history && history -c && shutdown -h now\` to power off)."
+}
+
+# Offer an interactive choice to reboot or shutdown after cleaning history.
+post_run_action() {
+  # Skip if stdin is not a TTY (non-interactive run)
+  if [[ ! -t 0 ]]; then
+    step "Reminder: Run \`rm -f rackmill.sh .bash_history && history -c && reboot\` (or \`... && shutdown -h now\`) before finalizing the image."
+    return
+  fi
+
+  step "Choose post-run action:"
+  echo "  [1] Reboot (clears rackmill.sh and history, then reboots)"
+  echo "  [2] Shutdown (clears rackmill.sh and history, then powers off)"
+  echo "  [3] Skip (do nothing)"
+  read -rp "Select 1/2/3: " choice
+
+  case "$choice" in
+    1)
+      step "Clearing artifacts and rebooting ..."
+      rm -f rackmill.sh .bash_history && history -c && reboot
+      ;;
+    2)
+      step "Clearing artifacts and shutting down ..."
+      rm -f rackmill.sh .bash_history && history -c && shutdown -h now
+      ;;
+    *)
+      step "No action selected. You can run \`rm -f rackmill.sh .bash_history && history -c && reboot\` or \`... && shutdown -h now\` manually."
+      ;;
+  esac
 }
 
 # Main conductor function that orchestrates the setup process.
@@ -1208,6 +1237,7 @@ main() {
   configure
   journal
   report
+  post_run_action
 
   # Clear trap on successful completion
   trap - ERR
