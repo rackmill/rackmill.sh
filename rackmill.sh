@@ -684,8 +684,10 @@ update_packages() {
 
     step "Checking for updates ..."
     # check-update returns 100 if updates are available, 0 if none, 1 on error
-    local check_status=0
-    $PKG_MGR check-update || check_status=$?
+    set +e  # Temporarily disable exit-on-error (check-update returns 100 for available updates)
+    $PKG_MGR check-update
+    local check_status=$?
+    set -e  # Re-enable exit-on-error
     if [[ $check_status -eq 1 ]]; then
       error "$PKG_MGR check-update failed."
       exit 1
