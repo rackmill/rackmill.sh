@@ -913,6 +913,13 @@ cleanup_prepare() {
 cleanup_apply() {
   section "Applying Cleanup Actions"
 
+  # Stop systemd-journald before removing journal files (RHEL/systemd systems)
+  # This prevents "Directory not empty" errors from active journal writes
+  if command -v systemctl &> /dev/null && systemctl is-active --quiet systemd-journald 2>/dev/null; then
+    step "Stopping systemd-journald to allow journal cleanup ..."
+    systemctl stop systemd-journald systemd-journald.socket systemd-journald-dev-log.socket 2>/dev/null || true
+  fi
+
   # Remove files matching patterns
   if [[ ${#CLEANUP_FILES[@]} -gt 0 ]]; then
     step "Removing files ..."
