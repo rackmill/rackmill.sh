@@ -1180,8 +1180,8 @@ report() {
 post_run_action() {
   # Skip if stdin is not a TTY (non-interactive run)
   if [[ ! -t 0 ]]; then
-    step "Reminder: Run the following command before finalizing the image:"
-    step "(history -c clears in-memory history, exec replaces your shell)"
+    step "To clear history and reboot or shutdown, run one of the following commands:"
+    step "('history -c' clears in-memory history, 'exec' prevents shell from saving history on exit)"
     echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
     return
   fi
@@ -1205,6 +1205,7 @@ post_run_action() {
       ;;
     *)
       step "Skipped. To clear history and reboot or shutdown, run one of the following commands:"
+      step "('history -c' clears in-memory history, 'exec' prevents shell from saving history on exit)"
       echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
       echo "history -c && rm -f rackmill.sh ~/.bash_history && exec shutdown -h now"
       ;;
