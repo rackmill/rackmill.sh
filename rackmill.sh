@@ -570,6 +570,35 @@ aptdate() {
   step "Package update and upgrade completed successfully."
 }
 
+# Install cloud-init package.
+#
+# Installs cloud-init on all Ubuntu and Debian systems for template provisioning.
+# For archived Debian releases (9-10), uses --allow-unauthenticated flag.
+#
+# Outputs:
+#   Standard apt-get console output
+#   Progress messages via section() and step() calls
+#
+# Exit status:
+#   0 on success
+#   Non-zero if apt-get install fails (script will exit)
+
+cloud_init_install() {
+  section "Installing cloud-init"
+
+  # Determine if we need --allow-unauthenticated for archived releases
+  local apt_flags="-y"
+  if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
+    apt_flags="-y --allow-unauthenticated"
+    step "Note: Using --allow-unauthenticated for archived Debian release"
+  fi
+
+  step "Installing cloud-init package ..."
+  apt-get install $apt_flags cloud-init
+
+  step "cloud-init installed successfully."
+}
+
 # Set system hostname.
 #
 # Sets hostname to "rackmill".
@@ -701,6 +730,12 @@ cleanup_apply() {
         step "No files found matching $file. Skipping."
       fi
     done
+  fi
+
+  # Clean cloud-init state for templating
+  if command -v cloud-init > /dev/null 2>&1; then
+    step "Cleaning cloud-init state ..."
+    cloud-init clean --logs
   fi
 
   step "Cleanup actions completed successfully."
@@ -872,6 +907,7 @@ main() {
   apt_sources_prepare
   apt_sources_apply
   aptdate
+  cloud_init_install
   cleanup_prepare
   cleanup_apply
   configure
