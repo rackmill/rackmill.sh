@@ -42,6 +42,7 @@ OS_DISTRO=""        # specific distro: "ubuntu", "debian", "almalinux", "rocky",
 VERSION_ID=""
 VERSION_MAJOR=""
 CODENAME=""
+PKG_MGR=""          # "apt" for Debian/Ubuntu, "dnf" for RHEL 8+, "yum" for CentOS 7
 
 # Decision flags
 APT_SOURCES_CHANGES_REQUIRED=false
@@ -92,7 +93,9 @@ REMOVE_PATTERNS=(
 
   # RHEL-specific: DNF/YUM cache and history
   "/var/cache/dnf/*"
+  "/var/cache/yum/*"
   "/var/lib/dnf/history*"
+  "/var/lib/yum/history*"
   "/var/lib/rpm/__db*"
 )
 
@@ -328,11 +331,20 @@ setup() {
         step "Detected Debian $VERSION_ID ($CODENAME)."
       fi
     elif [[ "$OS_TYPE" == "rhel" ]]; then
-      if [[ "$VERSION_MAJOR" -lt 8 ]]; then
-        error "$OS_DISTRO $VERSION_ID is not supported. Minimum version: 8. Exiting."
+      # CentOS 7 is minimum for RHEL-family (uses yum); RHEL 8+ uses dnf
+      if [[ "$OS_DISTRO" == "centos" && "$VERSION_MAJOR" -eq 7 ]]; then
+        PKG_MGR="yum"
+        step "⚠️  Detected CentOS $VERSION_ID - END OF LIFE (EOL)"
+        step "    CentOS 7 reached EOL on June 30, 2024."
+        step "    Repositories have moved to vault.centos.org (no security updates)."
+        step "    Consider migrating to AlmaLinux, Rocky Linux, or another supported distribution."
+      elif [[ "$VERSION_MAJOR" -lt 8 ]]; then
+        error "$OS_DISTRO $VERSION_ID is not supported. Minimum version: 8 (or CentOS 7). Exiting."
         exit 2
+      else
+        PKG_MGR="dnf"
+        step "Detected $OS_DISTRO $VERSION_ID (RHEL-family)."
       fi
-      step "Detected $OS_DISTRO $VERSION_ID (RHEL-family)."
     fi
   else
     error "/etc/os-release not found. Unable to detect OS. Exiting."
@@ -575,8 +587,26 @@ apt_sources_apply() {
 rhel_repos_prepare() {
   section "Auditing RHEL Repositories"
 
+  # CentOS 7 EOL: Fix repos to use vault.centos.org
+  if [[ "$OS_DISTRO" == "centos" && "$VERSION_MAJOR" -eq 7 ]]; then
+    step "CentOS 7 is EOL - checking if vault.centos.org migration is needed ..."
+    
+    # Check if repos still point to mirror.centos.org (which no longer works)
+    if grep -rq "mirror.centos.org\|mirrorlist.centos.org" /etc/yum.repos.d/*.repo 2>/dev/null; then
+      step "Migrating CentOS 7 repos to vault.centos.org ..."
+      
+      # Disable mirrorlist and enable baseurl pointing to vault
+      sed -i 's/^mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-*.repo
+      sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo
+      
+      step "CentOS 7 repos migrated to vault.centos.org."
+    else
+      step "CentOS 7 repos already configured for vault or alternate mirror."
+    fi
+  fi
+
   step "Listing enabled repositories ..."
-  dnf repolist enabled
+  $PKG_MGR repolist enabled
 
   step "Repository files in /etc/yum.repos.d/:"
   ls -la /etc/yum.repos.d/
@@ -610,11 +640,22 @@ rhel_repos_prepare() {
 update_packages() {
   section "Updating and Upgrading Packages"
 
-  # Basic network connectivity check
+  # Network connectivity check (ICMP first, then HTTP fallback for ICMP-blocked environments)
   step "Checking network connectivity ..."
-  local test_host="1.1.1.1"
-  if ! ping -c 1 -W 5 "$test_host" > /dev/null 2>&1; then
-    error "Network connectivity check failed (cannot reach $test_host)."
+  local network_ok=false
+  
+  # Try ICMP ping first
+  if ping -c 1 -W 5 1.1.1.1 > /dev/null 2>&1; then
+    network_ok=true
+  # Fallback: try HTTP HEAD request (works when ICMP is blocked)
+  elif command -v curl &> /dev/null && curl -sI --connect-timeout 5 https://deb.debian.org > /dev/null 2>&1; then
+    network_ok=true
+  elif command -v wget &> /dev/null && wget -q --spider --timeout=5 https://deb.debian.org 2>/dev/null; then
+    network_ok=true
+  fi
+  
+  if ! $network_ok; then
+    error "Network connectivity check failed (ICMP and HTTP tests failed)."
     error "Please verify network configuration before continuing."
     read -rp "Continue anyway? Type 'y' to proceed, anything else to exit: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
@@ -625,26 +666,37 @@ update_packages() {
   fi
 
   if [[ "$OS_TYPE" == "rhel" ]]; then
-    # RHEL-family: use dnf
-    step "Cleaning DNF cache ..."
-    dnf clean all
+    # RHEL-family: use dnf (RHEL 8+) or yum (CentOS 7)
+    step "Cleaning $PKG_MGR cache ..."
+    $PKG_MGR clean all
 
     step "Checking for updates ..."
-    # dnf check-update returns 100 if updates are available, 0 if none, 1 on error
+    # check-update returns 100 if updates are available, 0 if none, 1 on error
     set +e
-    dnf check-update
+    $PKG_MGR check-update
     local check_status=$?
     set -e
     if [[ $check_status -eq 1 ]]; then
-      error "dnf check-update failed."
+      error "$PKG_MGR check-update failed."
       exit 1
     fi
 
     step "Upgrading packages ..."
-    dnf upgrade -y
+    if [[ "$PKG_MGR" == "yum" ]]; then
+      yum update -y
+    else
+      dnf upgrade -y
+    fi
 
     step "Removing unused packages ..."
-    dnf autoremove -y
+    if [[ "$PKG_MGR" == "yum" ]]; then
+      # yum doesn't have autoremove in CentOS 7, use package-cleanup from yum-utils
+      if command -v package-cleanup &> /dev/null; then
+        package-cleanup --leaves --quiet 2>/dev/null || true
+      fi
+    else
+      dnf autoremove -y
+    fi
 
     step "Package update and upgrade completed successfully."
   else
@@ -708,7 +760,14 @@ cloud_init_install() {
   step "Installing cloud-init package ..."
   
   if [[ "$OS_TYPE" == "rhel" ]]; then
-    dnf install -y cloud-init
+    # CentOS 7 requires EPEL for cloud-init
+    if [[ "$OS_DISTRO" == "centos" && "$VERSION_MAJOR" -eq 7 ]]; then
+      if ! yum repolist enabled | grep -qi epel; then
+        step "Enabling EPEL repository for CentOS 7 (required for cloud-init) ..."
+        yum install -y epel-release
+      fi
+    fi
+    $PKG_MGR install -y cloud-init
   else
     # Determine if we need --allow-unauthenticated for archived releases
     local apt_flags="-y"
@@ -737,7 +796,13 @@ cloud_init_install() {
 
 set_host() {
   step "Setting hostname to 'rackmill' ..."
-  hostnamectl set-hostname rackmill
+  if command -v hostnamectl &> /dev/null; then
+    hostnamectl set-hostname rackmill
+  else
+    # Fallback for non-systemd systems (e.g., Ubuntu 14.04 Upstart)
+    echo "rackmill" > /etc/hostname
+    hostname rackmill
+  fi
 
   step "Updating /etc/hosts to reflect hostname change ..."
   if [[ -f /etc/hosts ]]; then
@@ -926,7 +991,13 @@ configure() {
     # Install langpacks if needed
     if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
       step "Installing Australian English language pack ..."
-      dnf install -y glibc-langpack-en || true
+      if [[ "$PKG_MGR" == "yum" ]]; then
+        # CentOS 7 uses different locale handling
+        yum reinstall -y glibc-common || yum install -y glibc-common || true
+        localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+      else
+        $PKG_MGR install -y glibc-langpack-en || true
+      fi
     fi
     localectl set-locale LANG=en_AU.UTF-8
 
@@ -944,7 +1015,13 @@ configure() {
     set_host
 
     step "Setting timezone to Australia/Perth ..."
-    timedatectl set-timezone Australia/Perth
+    if command -v timedatectl &> /dev/null; then
+      timedatectl set-timezone Australia/Perth
+    else
+      # Fallback for non-systemd systems (e.g., Ubuntu 14.04 Upstart)
+      ln -sf /usr/share/zoneinfo/Australia/Perth /etc/localtime
+      echo "Australia/Perth" > /etc/timezone
+    fi
     date # show current date/time for verification
 
     step "Setting locale to en_AU.UTF-8 ..."

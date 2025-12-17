@@ -1,6 +1,6 @@
-# Rackmill Ubuntu/Debian Setup Script
+# Rackmill Ubuntu/Debian/RHEL Setup Script
 
-Rackmill is a robust, operator-friendly Bash script for preparing Ubuntu and Debian systems for deployment, imaging, or template creation. It enforces canonical APT sources, configures system settings, and securely cleans sensitive data, with interactive prompts and clear logging throughout.
+Rackmill is a robust, operator-friendly Bash script for preparing Ubuntu, Debian, and RHEL-family systems for deployment, imaging, or template creation. It enforces canonical package sources, configures system settings, and securely cleans sensitive data, with interactive prompts and clear logging throughout.
 
 ## Features
 - **Canonical APT Sources Enforcement:**
@@ -37,13 +37,13 @@ While the script runs, follow the interactive prompts to review and confirm each
 clear; cd ~
 curl -fsSL https://github.com/adambraimbridge/rackmill.sh/raw/refs/heads/main/rackmill.sh -o rackmill.sh
 chmod +x rackmill.sh
-./rackmill.sh
+sudo ./rackmill.sh
 ```
 
 **Alternative (if curl is unavailable):**
 ```bash
 wget https://github.com/adambraimbridge/rackmill.sh/raw/refs/heads/main/rackmill.sh -O rackmill.sh
-chmod +x rackmill.sh && ./rackmill.sh
+chmod +x rackmill.sh && sudo ./rackmill.sh
 ```
 
 ## Manual Setup (If Quick Start is not possible)
@@ -79,6 +79,16 @@ chmod +x rackmill.sh && ./rackmill.sh
 - **Version 13 (Trixie)**: Current stable
 - **Format**: Archive repos (9-10), Classic sources.list (11), DEB822 format (≥12)
 - **Note**: Archived releases show APT warnings about missing Release files - this is expected
+
+### RHEL-family
+- **AlmaLinux**: 8, 9
+- **Rocky Linux**: 8, 9
+- **Oracle Linux**: 8, 9
+- **CentOS Stream**: 8, 9
+- **CentOS 7**: EOL (uses vault.centos.org, requires EPEL for cloud-init)
+- **CloudLinux**: 8, 9
+- **RHEL**: 8, 9
+- **Note**: CentOS 7 repos are automatically migrated to vault.centos.org
 
 ## Notes
 - No automatic changes to APT sources. Operator must manually edit if needed
