@@ -1199,15 +1199,15 @@ post_run_action() {
       step "Clearing artifacts and rebooting ..."
       # Delete history files for all users
       rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
-      # Kill the entire process tree up to init (kills login shell, sudo, etc.)
-      # This prevents any shell from saving in-memory history on exit
-      kill -9 -1 &
+      sync  # ensure deletions are flushed to disk
+      # reboot -f forces immediate reboot without shutdown scripts
+      # Bash won't have time to save in-memory history
       reboot -f
       ;;
     s|S)
       step "Clearing artifacts and shutting down ..."
       rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
-      kill -9 -1 &
+      sync  # ensure deletions are flushed to disk
       shutdown -h now
       ;;
     *)
