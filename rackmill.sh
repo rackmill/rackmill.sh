@@ -684,14 +684,15 @@ update_packages() {
 
     step "Checking for updates ..."
     # check-update returns 100 if updates are available, 0 if none, 1 on error
-    local check_status
-    set +e
-    $PKG_MGR check-update
-    check_status=$?
-    set -e
+    local check_status=0
+    $PKG_MGR check-update || check_status=$?
     if [[ $check_status -eq 1 ]]; then
       error "$PKG_MGR check-update failed."
       exit 1
+    elif [[ $check_status -eq 100 ]]; then
+      step "Updates are available."
+    else
+      step "System is up to date."
     fi
 
     step "Upgrading packages ..."
