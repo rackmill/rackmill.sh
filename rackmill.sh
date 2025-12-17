@@ -1181,8 +1181,8 @@ post_run_action() {
   # Skip if stdin is not a TTY (non-interactive run)
   if [[ ! -t 0 ]]; then
     step "Reminder: Run the following command before finalizing the image:"
-    step "(Kills your shell to prevent history being saved, then reboots)"
-    echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & reboot"
+    step "(history -c clears in-memory history, exec replaces your shell)"
+    echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
     return
   fi
 
@@ -1205,8 +1205,8 @@ post_run_action() {
       ;;
     *)
       step "Skipped. To clear history and reboot or shutdown, run one of the following commands:"
-      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & reboot"
-      echo "rm -f rackmill.sh ~/.bash_history; kill -9 \$\$ & shutdown -h now"
+      echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
+      echo "history -c && rm -f rackmill.sh ~/.bash_history && exec shutdown -h now"
       ;;
   esac
 }
