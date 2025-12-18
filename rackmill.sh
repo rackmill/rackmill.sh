@@ -409,7 +409,8 @@ apt_sources_prepare() {
   local is_deb822=false
   
   if [[ "$OS_TYPE" == "debian" ]]; then
-    if [[ "${VERSION_MAJOR}" -ge 12 ]]; then
+    # Debian 13 (trixie) and later use deb822 format by default
+    if [[ "${VERSION_MAJOR}" -ge 13 ]]; then
       canonical_file="/etc/apt/sources.list.d/debian.sources"
       is_deb822=true
     else
@@ -425,6 +426,41 @@ apt_sources_prepare() {
     fi
   fi
 
+  # For deb822 systems: if canonical file doesn't exist but sources.list does, offer migration
+  if $is_deb822 && [[ ! -f "$canonical_file" ]] && [[ -f /etc/apt/sources.list ]]; then
+    if grep -qE '^\s*deb ' /etc/apt/sources.list; then
+      warn "deb822 format is recommended for ${OS_TYPE^} ${VERSION_MAJOR}, but $canonical_file does not exist."
+      warn "Found active sources in /etc/apt/sources.list instead."
+      local confirm
+      read -rp "Create $canonical_file and migrate from sources.list? Type 'y' to proceed, anything else to exit: " confirm
+      if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        step "Creating $canonical_file..."
+        if [[ "$OS_TYPE" == "debian" ]]; then
+          cat > "$canonical_file" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: https://security.debian.org/debian-security
+Suites: trixie-security
+Components: main non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+        fi
+        step "Backing up /etc/apt/sources.list to /etc/apt/sources.list.bak..."
+        mv /etc/apt/sources.list /etc/apt/sources.list.bak
+        step "Migration complete. Running apt update to verify..."
+        apt update
+      else
+        error "Cannot proceed without deb822 sources. Please create $canonical_file manually or run 'apt modernize-sources' (apt 3.1+)."
+        exit 1
+      fi
+    fi
+  fi
+
   # Enforce canonical file rules
   if $is_deb822; then
     if [[ -f /etc/apt/sources.list ]]; then
@@ -432,13 +468,13 @@ apt_sources_prepare() {
       if grep -qE '^\s*deb ' /etc/apt/sources.list; then
         error "/etc/apt/sources.list contains deb lines but deb822 sources are in use."
         local confirm
-        read -rp "Run 'apt modernize-sources' to migrate? Type 'y' to run, anything else to exit: " confirm
+        read -rp "Move /etc/apt/sources.list to /etc/apt/sources.list.bak? Type 'y' to proceed, anything else to exit: " confirm
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-          step "Running apt modernize-sources..."
-          apt modernize-sources --assume-yes
-          step "Migration complete. Old sources backed up as .list.bak files."
+          step "Backing up /etc/apt/sources.list to /etc/apt/sources.list.bak..."
+          mv /etc/apt/sources.list /etc/apt/sources.list.bak
+          step "Done. Old sources.list backed up."
         else
-          error "Please remove or comment out all deb lines in /etc/apt/sources.list, or run 'apt modernize-sources' manually."
+          error "Please remove or comment out all deb lines in /etc/apt/sources.list."
           exit 1
         fi
       fi
