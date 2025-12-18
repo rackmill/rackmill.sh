@@ -1193,28 +1193,26 @@ post_run_action() {
     return
   fi
 
-  read -rp "Clean up and power off? [r] = Reboot, [s] = Shutdown, anything else = Skip: " choice
+  step "Clearing artifacts ..."
+  # Delete history files for all users
+  rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
+  sync  # ensure deletions are flushed to disk
+
+  read -rp "[r] 'reboot -f' | [s] 'shutdown -h now' | [*] continue: " choice
   case "$choice" in
     r|R)
-      step "Clearing artifacts and rebooting ..."
-      # Delete history files for all users
-      rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
-      sync  # ensure deletions are flushed to disk
-      # reboot -f forces immediate reboot without shutdown scripts
+      # 'reboot -f' forces immediate reboot without shutdown scripts
       # Bash won't have time to save in-memory history
       reboot -f
       ;;
     s|S)
-      step "Clearing artifacts and shutting down ..."
-      rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
-      sync  # ensure deletions are flushed to disk
       shutdown -h now
       ;;
     *)
       step "Skipped. To clear history and reboot or shutdown, run one of the following commands:"
       step "('history -c' clears in-memory history, 'exec' prevents shell from saving history on exit)"
-      echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
-      echo "history -c && rm -f rackmill.sh ~/.bash_history && exec shutdown -h now"
+      echo "history -c && rm -f ~/.bash_history && exec reboot -f"
+      echo "history -c && rm -f ~/.bash_history && exec shutdown -h now"
       ;;
   esac
 }
@@ -1234,8 +1232,8 @@ post_run_action() {
 #   Non-zero exit code on any fatal error
 
 main() {
-  # Trap to catch errors and report
-  trap 'error "Fatal error occurred. Exiting." ; exit 1' ERR
+  # Trap to catch errors and report (shows line number and failing command)
+  trap 'error "Fatal error on line $LINENO: $BASH_COMMAND" ; exit 1' ERR
 
   setup
   
