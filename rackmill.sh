@@ -1008,124 +1008,93 @@ cleanup_apply() {
   step "Cleanup actions completed successfully."
 }
 
-# Configure system locale, timezone, hostname, and keyboard layout.
-#
-# This function performs the following system configuration steps:
-#   - Sets timezone to Australia/Perth
-#   - Sets locale to en_AU.UTF-8
-#   - Regenerates SSH host keys
-#   - Runs keyboard configuration
-#
-# For Debian/Ubuntu: Uses dpkg-reconfigure for keyboard and openssh-server.
-# For RHEL-family: Uses localectl for keyboard and ssh-keygen for host keys.
-#
-# Note: Changes to hostname, locale, and keyboard may require session restart to take full effect.
-#
-# Outputs:
-#   Configuration changes via step() calls
-#   Current locale and timezone status
-#   Keyboard configuration prompt
-#   Reminder about session restart requirement
-#
-# Exit status:
-#   0 on success
-#   Non-zero if critical configuration fails
+configure_rhel() {
+  section "Configuring System Settings (RHEL)"
 
-configure() {
-  section "Configuring System Settings"
-
-  if [[ "$OS_TYPE" == "rhel" ]]; then
-    # RHEL-family configuration
-    step "Current keyboard layout:"
-    localectl status
-    
-    step "Available keyboard layouts can be listed with: localectl list-keymaps"
-    read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
-    if [[ -n "$keymap" ]]; then
-      # Validate keymap exists before applying
-      if localectl list-keymaps | grep -qx "$keymap"; then
-        localectl set-keymap "$keymap"
-        step "Keyboard layout set to $keymap."
-      else
-        error "Invalid keymap: $keymap. Run 'localectl list-keymaps' to see available options."
-        read -rp "Continue with current keyboard layout? Type 'y' to continue, anything else to exit: " cont
-        if [[ "$cont" != "y" && "$cont" != "Y" ]]; then
-          exit 1
-        fi
-        step "Keeping current keyboard layout."
-      fi
+  step "Current keyboard layout:"
+  localectl status
+  
+  step "Available keyboard layouts can be listed with: localectl list-keymaps"
+  read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
+  if [[ -n "$keymap" ]]; then
+    if localectl list-keymaps | grep -qx "$keymap"; then
+      localectl set-keymap "$keymap"
+      step "Keyboard layout set to $keymap."
     else
+      error "Invalid keymap: $keymap. Run 'localectl list-keymaps' to see available options."
+      read -rp "Continue with current keyboard layout? Type 'y' to continue, anything else to exit: " cont
+      if [[ "$cont" != "y" && "$cont" != "Y" ]]; then
+        exit 1
+      fi
       step "Keeping current keyboard layout."
     fi
-
-    # Set hostname
-    set_host
-
-    step "Setting timezone to Australia/Perth ..."
-    timedatectl set-timezone Australia/Perth
-    date
-
-    step "Setting locale to en_AU.UTF-8 ..."
-    # Install langpacks if needed
-    if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
-      step "Installing Australian English language pack ..."
-      if [[ "$PKG_MGR" == "yum" ]]; then
-        # CentOS 7 uses different locale handling
-        yum reinstall -y glibc-common || yum install -y glibc-common || true
-        localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
-      else
-        $PKG_MGR install -y glibc-langpack-en || true
-      fi
-    fi
-    localectl set-locale LANG=en_AU.UTF-8
-
-    step "Regenerating SSH host keys ..."
-    rm -f /etc/ssh/ssh_host_*
-    ssh-keygen -A
-    systemctl restart sshd
-
   else
-    # Debian/Ubuntu configuration
-    step "Running keyboard configuration ..."
-    dpkg-reconfigure keyboard-configuration
-
-    # Set hostname to "rackmill" and update /etc/hosts
-    set_host
-
-    step "Setting timezone to Australia/Perth ..."
-    if command -v timedatectl &> /dev/null; then
-      timedatectl set-timezone Australia/Perth
-    else
-      # Fallback for non-systemd systems (e.g., Ubuntu 14.04 Upstart)
-      ln -sf /usr/share/zoneinfo/Australia/Perth /etc/localtime
-      echo "Australia/Perth" > /etc/timezone
-    fi
-    date # show current date/time for verification
-
-    step "Setting locale to en_AU.UTF-8 ..."
-    # Ensure en_AU.UTF-8 is uncommented in /etc/locale.gen (Debian requirement)
-    if [[ -f /etc/locale.gen ]]; then
-      sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
-    fi
-    if command -v locale-gen &> /dev/null; then
-      locale-gen en_AU.UTF-8
-    else
-      # Fallback for minimal systems without locale-gen
-      localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
-    fi
-    update-locale LANG=en_AU.UTF-8
-
-    step "Regenerating SSH host keys ..."
-    rm -f /etc/ssh/ssh_host_*
-    if dpkg -l openssh-server &> /dev/null; then
-      dpkg-reconfigure openssh-server
-    else
-      # Fallback if openssh-server not installed via dpkg (minimal image)
-      ssh-keygen -A
-    fi
+    step "Keeping current keyboard layout."
   fi
 
-  step "Configuration changes applied. Locale and hostname won't take effect until the next session restart."
+  set_host
+
+  step "Setting timezone to Australia/Perth ..."
+  timedatectl set-timezone Australia/Perth
+  date
+
+  step "Setting locale to en_AU.UTF-8 ..."
+  if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
+    step "Installing Australian English language pack ..."
+    if [[ "$PKG_MGR" == "yum" ]]; then
+      yum reinstall -y glibc-common || yum install -y glibc-common || true
+      localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+    else
+      $PKG_MGR install -y glibc-langpack-en || true
+    fi
+  fi
+  localectl set-locale LANG=en_AU.UTF-8
+
+  step "Regenerating SSH host keys ..."
+  rm -f /etc/ssh/ssh_host_*
+  ssh-keygen -A
+  systemctl restart sshd
+
+  step "Configuration complete. Locale changes take effect on next login."
+}
+
+configure_debian() {
+  section "Configuring System Settings (Debian/Ubuntu)"
+
+  step "Running keyboard configuration ..."
+  dpkg-reconfigure keyboard-configuration
+
+  set_host
+
+  step "Setting timezone to Australia/Perth ..."
+  if command -v timedatectl &> /dev/null; then
+    timedatectl set-timezone Australia/Perth
+  else
+    ln -sf /usr/share/zoneinfo/Australia/Perth /etc/localtime
+    echo "Australia/Perth" > /etc/timezone
+  fi
+  date
+
+  step "Setting locale to en_AU.UTF-8 ..."
+  if [[ -f /etc/locale.gen ]]; then
+    sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
+  fi
+  if command -v locale-gen &> /dev/null; then
+    locale-gen en_AU.UTF-8
+  else
+    localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+  fi
+  update-locale LANG=en_AU.UTF-8
+
+  step "Regenerating SSH host keys ..."
+  rm -f /etc/ssh/ssh_host_*
+  if dpkg -l openssh-server &> /dev/null; then
+    dpkg-reconfigure openssh-server
+  else
+    ssh-keygen -A
+  fi
+
+  step "Configuration complete. Locale changes take effect on next login."
 }
 
 
@@ -1252,6 +1221,17 @@ post_run_action() {
 # handling and shell state restoration via traps. Ensures
 # predictable flow and clear error messages on failure.
 #
+# Execution order:
+#   1. setup()                  - Detect OS type and version
+#   2. journal()                - Ensure systemd journal is healthy
+#   3. *_repos_prepare()        - Audit package repositories
+#   4. configure_rhel/debian()  - Set timezone, locale, hostname, keyboard, regenerate SSH keys
+#   5. update_packages()        - Update and upgrade system packages
+#   6. cloud_init_install()     - Install cloud-init for template provisioning
+#   7. cleanup_prepare/apply()  - Wipe SSH keys, logs, machine-id for clean template
+#   8. report()                 - Show backups created
+#   9. post_run_action()        - Offer reboot/shutdown
+#
 # Outputs:
 #   All output from called functions
 #   Fatal error messages on unexpected failures
@@ -1266,21 +1246,26 @@ main() {
 
   setup
   
-  # Route to appropriate package management based on OS type
+  # Ensure journal infrastructure is healthy for logging during script execution
+  journal
+
+  # OS-specific: repository setup and configuration
   if [[ "$OS_TYPE" == "rhel" ]]; then
     rhel_repos_prepare
-    update_packages
+    configure_rhel
   else
     apt_sources_prepare
     apt_sources_apply
-    update_packages
+    configure_debian
   fi
-  
+
+  # Common: package updates and cloud-init
+  update_packages
   cloud_init_install
+
+  # Template preparation: wipe SSH keys, logs, machine-id, cloud-init state
   cleanup_prepare
   cleanup_apply
-  configure
-  journal
   report
   post_run_action
 
