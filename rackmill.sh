@@ -928,7 +928,6 @@ post_run_action() {
   section "Nearly done"
   step "Clearing artifacts ..."
   rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null || true
-  # Prevent bash from saving history on exit
   unset HISTFILE
   export HISTFILE=
   export HISTSIZE=0
@@ -939,14 +938,24 @@ post_run_action() {
   read -rp "[r] reboot | [s] shutdown | [*] neither: " choice
   case "$choice" in
     r|R)
-      # Use exec to replace the shell process entirely, preventing any history save
-      exec reboot
+      rm -f /root/.bash_history /home/*/.bash_history 2>/dev/null || true
+      sync
+      reboot
       ;;
     s|S)
-      exec shutdown -h now
+      rm -f /root/.bash_history /home/*/.bash_history 2>/dev/null || true
+      sync
+      poweroff
       ;;
     *)
-      echo "Cool."
+      step "To clear history, copy-paste one of these commands:"
+      echo ""
+      echo "    # Reboot:"
+      echo "    history -c && rm -f ~/.bash_history && unset HISTFILE && reboot"
+      echo ""
+      echo "    # Shutdown:"
+      echo "    history -c && rm -f ~/.bash_history && unset HISTFILE && poweroff"
+      echo ""
       ;;
   esac
 }
