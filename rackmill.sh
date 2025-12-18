@@ -95,8 +95,7 @@ REMOVE_PATTERNS=(
   # System randomness/state
   "/var/lib/systemd/random-seed"
 
-  # SSH host keys - regenerated on first boot
-  "/etc/ssh/ssh_host_*"
+  # SSH host keys handled by regenerate_ssh_keys(), not here
 
   # Root-specific files
   "/root/.ssh/authorized_keys"
@@ -716,9 +715,13 @@ regenerate_ssh_keys() {
   rm -f /etc/ssh/ssh_host_*
   ssh-keygen -A
   
-  # Restart sshd if systemctl is available and functional
-  if command -v systemctl &> /dev/null && systemctl is-system-running &> /dev/null; then
+  # Restart sshd to load new keys
+  if command -v systemctl &> /dev/null; then
+    # Try both service names (sshd on RHEL, ssh on Debian/Ubuntu)
     systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+  elif command -v service &> /dev/null; then
+    # Fallback for SysVinit/Upstart systems
+    service ssh restart 2>/dev/null || service sshd restart 2>/dev/null || true
   fi
 }
 
@@ -804,7 +807,10 @@ cleanup_apply() {
   if command -v cloud-init > /dev/null 2>&1; then
     step "Cleaning cloud-init state ..."
     cloud-init clean --logs
+    sleep 2  # Allow cloud-init to finish background tasks
   fi
+
+  sync  # Flush all pending writes before reboot
 
   step "Cleanup actions completed successfully."
 }
