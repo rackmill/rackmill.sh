@@ -927,9 +927,9 @@ cleanup_apply() {
       if compgen -G "$pattern" > /dev/null 2>&1; then
         # shellcheck disable=SC2086
         rm -rf $pattern
-        step "Removed: $pattern"
+        echo "✅ removed: $pattern"
       else
-        step "No files found matching $pattern. Skipping."
+        echo "🦘 no files found matching $pattern. Skipping."
       fi
     done
   fi
