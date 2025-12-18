@@ -1186,13 +1186,15 @@ post_run_action() {
   read -rp "[r] reboot | [s] shutdown | [*] neither: " choice
   case "$choice" in
     r|R)
-      reboot
+      nohup reboot &>/dev/null &
+      exit 0
       ;;
     s|S)
-      shutdown -h now
+      nohup shutdown -h now &>/dev/null &
+      exit 0
       ;;
     *)
-      step "Bon voyage."
+      step "Cool."
       ;;
   esac
 }
