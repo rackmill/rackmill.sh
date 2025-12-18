@@ -29,7 +29,7 @@ error() {
 }
 
 # Set ERR trap globally so it applies to all functions and subshells
-trap 'error "Fatal error occurred. Exiting."; exit 1' ERR
+trap 'error "Fatal error on line $LINENO: $BASH_COMMAND"; exit 1' ERR
 
 # Global arrays for tracking state
 declare -a BACKUPS=()
@@ -694,7 +694,7 @@ update_packages() {
     trap - ERR
     $PKG_MGR check-update
     local check_status=$?
-    trap 'error "Fatal error occurred. Exiting."; exit 1' ERR
+    trap 'error "Fatal error on line $LINENO: $BASH_COMMAND"; exit 1' ERR
     set -e
     if [[ $check_status -eq 1 ]]; then
       error "$PKG_MGR check-update failed."
