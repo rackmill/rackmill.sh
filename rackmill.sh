@@ -1165,8 +1165,6 @@ journal() {
 #   0 always
 
 report() {
-  section "Final Report"
-
   step "Backups created during this run:"
   if [[ ${#BACKUPS[@]} -eq 0 ]]; then
     echo "  None"
@@ -1177,42 +1175,24 @@ report() {
   fi
 }
 
-# Offer an interactive choice to reboot or shutdown after cleaning history.
-#
-# Note: history -c only works in the current shell, not from a script subshell.
-# The only reliable way to clear history is to:
-#   1. Delete ~/.bash_history (and all users' history files)
-#   2. Kill ALL ancestor shells (login shell, sudo, etc.) to prevent history save
-#   3. Immediately reboot/shutdown
+# Offer an interactive choice to reboot or shutdown.
 post_run_action() {
-  # Skip if stdin is not a TTY (non-interactive run)
-  if [[ ! -t 0 ]]; then
-    step "To clear history and reboot or shutdown, run one of the following commands:"
-    step "('history -c' clears in-memory history, 'exec' prevents shell from saving history on exit)"
-    echo "history -c && rm -f rackmill.sh ~/.bash_history && exec reboot"
-    return
-  fi
-
+  section "Nearly done"
   step "Clearing artifacts ..."
-  # Delete history files for all users
-  rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null
-  sync  # ensure deletions are flushed to disk
+  rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null && history -c
+  sync
 
-  read -rp "[r] 'reboot -f' | [s] 'shutdown -h now' | [*] continue: " choice
+  step "Reboot or shutdown"
+  read -rp "[r] reboot | [s] shutdown | [*] neither: " choice
   case "$choice" in
     r|R)
-      # 'reboot -f' forces immediate reboot without shutdown scripts
-      # Bash won't have time to save in-memory history
-      reboot -f
+      reboot
       ;;
     s|S)
       shutdown -h now
       ;;
     *)
-      step "Skipped. To clear history and reboot or shutdown, run one of the following commands:"
-      step "('history -c' clears in-memory history, 'exec' prevents shell from saving history on exit)"
-      echo "history -c && rm -f ~/.bash_history && exec reboot -f"
-      echo "history -c && rm -f ~/.bash_history && exec shutdown -h now"
+      step "Bon voyage."
       ;;
   esac
 }
