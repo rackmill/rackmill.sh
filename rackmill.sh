@@ -430,8 +430,17 @@ apt_sources_prepare() {
     if [[ -f /etc/apt/sources.list ]]; then
       # /etc/apt/sources.list may exist, but must not contain any deb lines
       if grep -qE '^\s*deb ' /etc/apt/sources.list; then
-        error "/etc/apt/sources.list contains deb lines but deb822 sources are in use. Please remove or comment out all deb lines."
-        exit 1
+        error "/etc/apt/sources.list contains deb lines but deb822 sources are in use."
+        local confirm
+        read -rp "Run 'apt modernize-sources' to migrate? Type 'y' to run, anything else to exit: " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+          step "Running apt modernize-sources..."
+          apt modernize-sources --assume-yes
+          step "Migration complete. Old sources backed up as .list.bak files."
+        else
+          error "Please remove or comment out all deb lines in /etc/apt/sources.list, or run 'apt modernize-sources' manually."
+          exit 1
+        fi
       fi
     fi
   else # classic
