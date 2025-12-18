@@ -28,6 +28,40 @@ error() {
   echo -e "\n${RED}-> $1${RESET}\n\n"
 }
 
+# Prompt for y/n confirmation. Usage: confirm "prompt" || exit 1
+confirm() {
+  local response
+  read -rp "$1 Type 'y' to proceed, anything else to exit: " response
+  [[ "$response" == "y" || "$response" == "Y" ]]
+}
+
+# Require confirmation or exit with error. Usage: require_confirm "prompt" "error_msg"
+require_confirm() {
+  confirm "$1" || { error "$2"; exit 1; }
+}
+
+# Determine canonical APT source file based on OS type and version.
+# Sets: canonical_file (path), is_deb822 (true/false)
+get_canonical_file() {
+  is_deb822=false
+  if [[ "$OS_TYPE" == "debian" ]]; then
+    if [[ "${VERSION_MAJOR}" -ge 13 ]]; then
+      canonical_file="/etc/apt/sources.list.d/debian.sources"
+      is_deb822=true
+    else
+      canonical_file="/etc/apt/sources.list"
+    fi
+  else
+    # Ubuntu: 23.10+ uses deb822
+    if [[ "${VERSION_ID:-}" =~ ^23\.10|^2[4-9]\.|^[3-9][0-9]\. ]]; then
+      canonical_file="/etc/apt/sources.list.d/ubuntu.sources"
+      is_deb822=true
+    else
+      canonical_file="/etc/apt/sources.list"
+    fi
+  fi
+}
+
 # Set ERR trap globally so it applies to all functions and subshells
 trap 'error "Fatal error on line $LINENO: $BASH_COMMAND"; exit 1' ERR
 
@@ -43,6 +77,8 @@ VERSION_ID=""
 VERSION_MAJOR=""
 CODENAME=""
 PKG_MGR=""          # "apt" for Debian/Ubuntu, "dnf" for RHEL 8+, "yum" for CentOS 7
+HAS_SYSTEMD=true    # false for Ubuntu <15, Debian <8
+APT_FLAGS="-y"      # may include --allow-unauthenticated for archived Debian
 
 # Decision flags
 APT_SOURCES_CHANGES_REQUIRED=false
@@ -104,35 +140,7 @@ REMOVE_PATTERNS=(
   "/var/lib/rpm/__db*"
 )
 
-# Canonical sources generator for this release.
-# @see: https://releases.ubuntu.com/ (Ubuntu)
-# @see: https://www.debian.org/releases/ (Debian)
-# @see: https://archive.debian.org/ (Archived Debian releases)
-#
-# This function outputs the canonical APT sources for the detected OS and version:
-#
-# Ubuntu:
-#   - For Ubuntu 23.04 and earlier: output classic deb lines (sources.list format)
-#   - For Ubuntu 23.10 and newer:  output deb822 format (for /etc/apt/sources.list.d/ubuntu.sources)
-#
-# Debian:
-#   - For Debian 9-10 (archived): uses archive.debian.org (no signed Release files)
-#   - For Debian 11: output classic deb lines (sources.list format)
-#   - For Debian 12+:  output deb822 format (for /etc/apt/sources.list.d/debian.sources)
-#
-# Note: Archived Debian releases (9-10) use archive.debian.org which does not have
-# signed Release files. APT will show warnings about missing Release files - this is
-# expected and normal for archived releases.
-#
-# The output format must match the canonical file expected by apt_sources_prepare().
-#
-# Arguments:
-#   $1 (optional): OS codename (defaults to $CODENAME)
-#   $2 (optional): OS type (defaults to $OS_TYPE)
-#
-# Outputs:
-#   Canonical APT sources in the correct format for the detected OS and version
-
+# Output canonical APT sources for detected OS/version. See FUNCTIONS.md for details.
 canonical_sources() {
   local codename="${1:-$CODENAME}"
   local os_type="${2:-$OS_TYPE}"
@@ -209,26 +217,7 @@ EOF
   fi
 }
 
-# Ensure preconditions are met and detect OS release.
-#
-# Verifies the script is running as root, outputs network info, and detects the OS type
-# (Ubuntu, Debian, or RHEL-family), version, and codename. Sets global variables OS_TYPE,
-# OS_DISTRO, VERSION_ID, VERSION_MAJOR, and CODENAME for use by other functions.
-#
-# Supported versions:
-#   Ubuntu: 14.04+ (Trusty and newer)
-#   Debian: 9+ (Stretch and newer)
-#   RHEL-family: 8+ (AlmaLinux, Rocky Linux, Oracle Linux, CentOS Stream, CloudLinux, RHEL)
-#
-# Outputs:
-#   Sets OS_TYPE, OS_DISTRO, VERSION_ID, VERSION_MAJOR, CODENAME globals
-#   Logs detected OS information via section() and step()
-#
-# Exit status:
-#   0 on success
-#   1 if not running as root
-#   2 if OS detection fails or unsupported OS/version
-
+# Verify root, detect OS type/version, set global variables. See FUNCTIONS.md.
 setup() {
   section "Initial Setup and Detection"
 
@@ -361,94 +350,37 @@ setup() {
     error "/etc/os-release not found. Unable to detect OS. Exiting."
     exit 2
   fi
+
+  # Set derived flags based on detected OS
+  # HAS_SYSTEMD: false for Ubuntu <15 or Debian <8 (Upstart/SysVinit)
+  if [[ "$OS_TYPE" == "ubuntu" && "$VERSION_MAJOR" -lt 15 ]]; then
+    HAS_SYSTEMD=false
+  elif [[ "$OS_TYPE" == "debian" && "$VERSION_MAJOR" -lt 8 ]]; then
+    HAS_SYSTEMD=false
+  fi
+  # APT_FLAGS: archived Debian releases need --allow-unauthenticated
+  if [[ "$OS_TYPE" == "debian" && "$VERSION_MAJOR" -le 10 ]]; then
+    APT_FLAGS="-y --allow-unauthenticated"
+  fi
 }
 
 
-# Audit apt sources to enforce canonical configuration.
-#
-# This function enforces rules for canonical APT source files for both Ubuntu and Debian:
-#
-# Ubuntu:
-#   - For Ubuntu 23.04 and earlier: /etc/apt/sources.list
-#   - For Ubuntu 23.10 and newer:   /etc/apt/sources.list.d/ubuntu.sources (deb822 format)
-#
-# Debian:
-#   - For Debian 9-11: /etc/apt/sources.list
-#   - For Debian 12+:  /etc/apt/sources.list.d/debian.sources (deb822 format)
-#
-# For deb822 format (Ubuntu 23.10+ or Debian 12+):
-#   - The canonical source file is /etc/apt/sources.list.d/ubuntu.sources (Ubuntu) or debian.sources (Debian).
-#   - /etc/apt/sources.list may exist by default, but should not contain any deb sources.
-#   - The script does NOT error if /etc/apt/sources.list exists, but will error if it contains any deb lines.
-#   - The script will echo the contents of the canonical file and prompt the operator to review & confirm.
-#
-# For classic format (Ubuntu 23.04 and earlier, or Debian 9-11):
-#   - The canonical source file is /etc/apt/sources.list (classic format).
-#   - The script compares the normalized deb lines to the expected canonical configuration.
-#
-# In all cases:
-#   - If any other .list or .sources files are present in /etc/apt/sources.list.d/, 
-#       the script will display a list of offending files and prompt the operator 
-#       to review & confirm before proceeding. 
-#
-# Outputs:
-#   - For classic sources: sets up canonical sources for comparison and sets APT_SOURCES_CHANGES_REQUIRED=true if the current sources differ from the canonical configuration.
-#   - For deb822 sources: displays the file contents and prompts the operator to confirm correctness interactively.
-#   - If found, displays a list of offending files and prompt the operator to review & confirm before proceeding.
-#   - Logs progress and audit results via step() calls.
-#
-# Exit status:
-#   0 if only the canonical APT source file is present and matches expected configuration, or if no changes are required
-#   1 if any non-canonical .list or .sources files are found in /etc/apt/sources.list.d/, or on other audit errors
-
+# Audit APT sources, enforce canonical configuration. See FUNCTIONS.md.
 apt_sources_prepare() {
   section "Auditing APT Sources"
 
   # Determine canonical file based on OS type and version
   local canonical_file
-  local is_deb822=false
-  
-  if [[ "$OS_TYPE" == "debian" ]]; then
-    # Debian 13 (trixie) and later use deb822 format by default
-    if [[ "${VERSION_MAJOR}" -ge 13 ]]; then
-      canonical_file="/etc/apt/sources.list.d/debian.sources"
-      is_deb822=true
-    else
-      canonical_file="/etc/apt/sources.list"
-    fi
-  else
-    # Ubuntu
-    if [[ "${VERSION_ID:-}" =~ ^23\.10|^2[4-9]\.|^[3-9][0-9]\. ]]; then
-      canonical_file="/etc/apt/sources.list.d/ubuntu.sources"
-      is_deb822=true
-    else
-      canonical_file="/etc/apt/sources.list"
-    fi
-  fi
+  local is_deb822
+  get_canonical_file
 
   # For deb822 systems: if canonical file doesn't exist but sources.list does, offer migration
   if $is_deb822 && [[ ! -f "$canonical_file" ]] && [[ -f /etc/apt/sources.list ]]; then
     if grep -qE '^\s*deb ' /etc/apt/sources.list; then
       step "$canonical_file not found. /etc/apt/sources.list contains deb lines."
-      local confirm
-      read -rp "Create $canonical_file and backup sources.list? Type 'y' to proceed, anything else to exit: " confirm
-      if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+      if confirm "Create $canonical_file and backup sources.list?"; then
         step "Creating $canonical_file..."
-        if [[ "$OS_TYPE" == "debian" ]]; then
-          cat > "$canonical_file" <<'EOF'
-Types: deb
-URIs: https://deb.debian.org/debian
-Suites: trixie trixie-updates
-Components: main non-free-firmware
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-
-Types: deb
-URIs: https://security.debian.org/debian-security
-Suites: trixie-security
-Components: main non-free-firmware
-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-EOF
-        fi
+        canonical_sources > "$canonical_file"
         step "Backing up /etc/apt/sources.list to /etc/apt/sources.list.bak..."
         mv /etc/apt/sources.list /etc/apt/sources.list.bak
         step "Running apt update..."
@@ -466,9 +398,7 @@ EOF
       # /etc/apt/sources.list may exist, but must not contain any deb lines
       if grep -qE '^\s*deb ' /etc/apt/sources.list; then
         error "/etc/apt/sources.list contains deb lines but deb822 sources are in use."
-        local confirm
-        read -rp "Move /etc/apt/sources.list to /etc/apt/sources.list.bak? Type 'y' to proceed, anything else to exit: " confirm
-        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        if confirm "Move /etc/apt/sources.list to /etc/apt/sources.list.bak?"; then
           step "Backing up /etc/apt/sources.list to /etc/apt/sources.list.bak..."
           mv /etc/apt/sources.list /etc/apt/sources.list.bak
           step "Done. Old sources.list backed up."
@@ -519,126 +449,63 @@ EOF
       echo "  - $f"
     done
     step "--------------------------------------------------"
-    read -rp "Review the above files. Type 'y' to proceed anyway, anything else to exit: " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-      error "Operator did not confirm non-canonical APT sources. Exiting."
-      exit 1
-    fi
+    require_confirm "Review the above files." "Operator did not confirm non-canonical APT sources. Exiting."
   fi
 
   # For all sources, display file and prompt operator for confirmation
   step "Displaying contents of $canonical_file:\n"
   cat "$canonical_file"
   step "--------------------------------------------------"
-  read -rp "Is this APT source config correct? Type 'y' to proceed, anything else to exit: " confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-
+  if ! confirm "Is this APT source config correct?"; then
     step "Cool. We'll stop now. Here's the canonical config for $canonical_file:\n"
     canonical_sources
-
     error "Operator did not confirm deb822 APT sources. Exiting."
     exit 1
   fi
-  APT_SOURCES_CHANGES_REQUIRED=false
 
   if ! $is_deb822; then
     # For classic sources.list, compare normalized deb lines to canonical configuration
     local expected_sources
-    expected_sources=$(canonical_sources | sed 's/#.*//;s/\s\+/ /g' | sort)
+    expected_sources=$(canonical_sources | sed 's/#.*//;s/\\s\\+/ /g' | sort)
 
     local current_sources
-    current_sources=$(grep -E '^\s*deb ' "$canonical_file" | sed 's/#.*//;s/\s\+/ /g' | sort)
+    current_sources=$(grep -E '^\\s*deb ' "$canonical_file" | sed 's/#.*//;s/\\s\\+/ /g' | sort)
     if [[ "$expected_sources" != "$current_sources" ]]; then
       APT_SOURCES_CHANGES_REQUIRED=true
-    else
-      APT_SOURCES_CHANGES_REQUIRED=false
     fi
   fi
 }
 
-# Apply approved changes to apt source files.
-#
-# If changes to APT sources are required, this function exits after informing
-# the operator of the required changes. The operator is expected to manually
-# edit the relevant files and re-run the script. No automatic changes are made
-# in this case.
-#
-# If no changes are required, the function continues normally.
-#
-# Outputs:
-#   If changes are required: appends backup paths to BACKUPS array, 
-#   prints a message describing the required changes, then exits.
-#
-# Exit status:
-#   0 on success or if no changes required
-#   1 if backup creation fails or if changes are required and operator intervention is needed
-
+# Apply approved APT source changes or prompt for manual intervention.
 apt_sources_apply() {
-  if $APT_SOURCES_CHANGES_REQUIRED; then
-    section "Manual APT Sources Intervention Required"
-    error "APT sources do not match the canonical configuration for $OS_TYPE $VERSION_ID ($CODENAME)."
-    # Determine canonical file based on OS type and version
-    local canonical_file
-    if [[ "$OS_TYPE" == "debian" ]]; then
-      if [[ "${VERSION_MAJOR}" -ge 12 ]]; then
-        canonical_file="/etc/apt/sources.list.d/debian.sources"
-      else
-        canonical_file="/etc/apt/sources.list"
-      fi
-    else
-      # Ubuntu
-      if [[ "${VERSION_ID:-}" =~ ^23\.10|24\. ]]; then
-        canonical_file="/etc/apt/sources.list.d/ubuntu.sources"
-      else
-        canonical_file="/etc/apt/sources.list"
-      fi
-    fi
-    # Always create a backup before requiring manual intervention (only for classic sources.list)
-    if [[ "$canonical_file" == "/etc/apt/sources.list" && -f /etc/apt/sources.list ]]; then
-      local backup_file="/etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S)"
-      cp /etc/apt/sources.list "$backup_file"
-      BACKUPS+=("$backup_file")
-      step "Created backup of /etc/apt/sources.list at $backup_file."
-    fi
-    step "Double-check to see if you need to manually edit the APT source file.\n"
-    echo "Expected canonical contents for $canonical_file:"
-    echo
-    canonical_sources
-    step "--------------------------------------------------"
-    read -rp "Are you sure you want to continue? Type 'y' to proceed, anything else to exit: " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-      error "After making the necessary changes, re-run this script. No automatic changes have been made."
-      exit 1
-    fi
-  else
+  if ! $APT_SOURCES_CHANGES_REQUIRED; then
     step "No changes required to APT sources."
     return 0
   fi
+
+  section "Manual APT Sources Intervention Required"
+  error "APT sources do not match the canonical configuration for $OS_TYPE $VERSION_ID ($CODENAME)."
+
+  local canonical_file is_deb822
+  get_canonical_file
+
+  # Backup classic sources.list before manual intervention
+  if [[ "$canonical_file" == "/etc/apt/sources.list" && -f /etc/apt/sources.list ]]; then
+    local backup_file="/etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S)"
+    cp /etc/apt/sources.list "$backup_file"
+    BACKUPS+=("$backup_file")
+    step "Created backup of /etc/apt/sources.list at $backup_file."
+  fi
+
+  step "Double-check to see if you need to manually edit the APT source file.\n"
+  echo "Expected canonical contents for $canonical_file:"
+  echo
+  canonical_sources
+  step "--------------------------------------------------"
+  require_confirm "Are you sure you want to continue?" "After making the necessary changes, re-run this script. No automatic changes have been made."
 }
 
-# Audit RHEL-family yum/dnf repositories.
-#
-# This function displays enabled repositories for RHEL-family systems and prompts
-# the operator to confirm they are correct before proceeding.
-#
-# Supported distributions:
-#   - AlmaLinux 8+
-#   - Rocky Linux 8+
-#   - Oracle Linux 8+
-#   - CentOS Stream 8+
-#   - CloudLinux 8+
-#   - RHEL 8+
-#
-# Outputs:
-#   - Lists all enabled repositories via dnf repolist
-#   - Displays repo files in /etc/yum.repos.d/
-#   - Prompts operator to confirm repos are correct
-#   - Logs progress via step() calls
-#
-# Exit status:
-#   0 if operator confirms repositories are correct
-#   1 if operator declines or on error
-
+# Audit RHEL yum/dnf repositories, prompt for confirmation. See FUNCTIONS.md.
 rhel_repos_prepare() {
   section "Auditing RHEL Repositories"
 
@@ -673,31 +540,12 @@ rhel_repos_prepare() {
   ls -la /etc/yum.repos.d/
 
   step "--------------------------------------------------"
-  read -rp "Are the enabled repositories correct? Type 'y' to proceed, anything else to exit: " confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    error "Operator did not confirm RHEL repositories. Please review /etc/yum.repos.d/ and try again."
-    exit 1
-  fi
+  require_confirm "Are the enabled repositories correct?" "Operator did not confirm RHEL repositories. Please review /etc/yum.repos.d/ and try again."
 
   step "RHEL repositories confirmed."
 }
 
 # Update package lists and perform system upgrade.
-#
-# For Debian/Ubuntu: Runs apt-get update, dist-upgrade, autoremove, and autoclean.
-# For RHEL-family: Runs dnf clean, check-update, upgrade, and autoremove.
-#
-# For archived Debian releases (9-10), adds --allow-unauthenticated flag
-# since archive.debian.org repositories don't have valid GPG signatures.
-#
-# Outputs:
-#   Standard package manager console output
-#   Progress messages via section() and step() calls
-#
-# Exit status:
-#   0 on success
-#   Non-zero if package operations fail
-
 update_packages() {
   section "Updating and Upgrading Packages"
 
@@ -718,10 +566,7 @@ update_packages() {
   if ! $network_ok; then
     error "Network connectivity check failed (ICMP and HTTP tests failed)."
     error "Please verify network configuration before continuing."
-    read -rp "Continue anyway? Type 'y' to proceed, anything else to exit: " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-      exit 1
-    fi
+    confirm "Continue anyway?" || exit 1
   else
     step "Network connectivity verified."
   fi
@@ -769,10 +614,7 @@ update_packages() {
     step "Package update and upgrade completed successfully."
   else
     # Debian/Ubuntu: use apt-get
-    # Determine if we need --allow-unauthenticated for archived releases
-    local apt_flags="-y"
-    if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
-      apt_flags="-y --allow-unauthenticated"
+    if [[ "$APT_FLAGS" == *"--allow-unauthenticated"* ]]; then
       step "Note: Using --allow-unauthenticated for archived Debian release (expected for archive.debian.org)"
     fi
 
@@ -800,28 +642,15 @@ update_packages() {
       apt-get update  # If this fails, the script will exit due to set -e
     fi
     
-    apt-get dist-upgrade $apt_flags
-    apt-get autoremove --purge $apt_flags
+    apt-get dist-upgrade $APT_FLAGS
+    apt-get autoremove --purge $APT_FLAGS
     apt-get autoclean
 
     step "Package update and upgrade completed successfully."
   fi
 }
 
-# Install cloud-init package.
-#
-# Installs cloud-init on all systems for template provisioning.
-# For archived Debian releases (9-10), uses --allow-unauthenticated flag.
-# For RHEL-family, uses dnf.
-#
-# Outputs:
-#   Standard package manager console output
-#   Progress messages via section() and step() calls
-#
-# Exit status:
-#   0 on success
-#   Non-zero if package install fails (script will exit)
-
+# Install cloud-init package for template provisioning.
 cloud_init_install() {
   section "Installing cloud-init"
 
@@ -837,31 +666,16 @@ cloud_init_install() {
     fi
     $PKG_MGR install -y cloud-init
   else
-    # Determine if we need --allow-unauthenticated for archived releases
-    local apt_flags="-y"
-    if [[ "$OS_TYPE" == "debian" && "${VERSION_MAJOR}" -le 10 ]]; then
-      apt_flags="-y --allow-unauthenticated"
+    if [[ "$APT_FLAGS" == *"--allow-unauthenticated"* ]]; then
       step "Note: Using --allow-unauthenticated for archived Debian release"
     fi
-    apt-get install $apt_flags cloud-init
+    apt-get install $APT_FLAGS cloud-init
   fi
 
   step "cloud-init installed successfully."
 }
 
-# Set system hostname.
-#
-# Sets hostname to "rackmill".
-# Also updates /etc/hosts to change masterdaweb to rackmill.
-# Outputs the contents of /etc/hosts and prompts the operator to confirm it's okay.
-#
-# Outputs:
-#   Configuration changes via step() calls
-#
-# Exit status:
-#   0 on success
-#   Non-zero if critical configuration fails
-
+# Set system hostname to 'rackmill' and update /etc/hosts.
 set_host() {
   step "Setting hostname to 'rackmill' ..."
   if command -v hostnamectl &> /dev/null; then
@@ -880,31 +694,35 @@ set_host() {
     step "Displaying contents of /etc/hosts:"
     cat /etc/hosts
     step "--------------------------------------------------"
-    read -rp "Is this /etc/hosts config correct? Type 'y' to proceed, anything else to exit: " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-      error "Operator did not confirm /etc/hosts changes. Exiting."
-      exit 1
-    fi
+    require_confirm "Is this /etc/hosts config correct?" "Operator did not confirm /etc/hosts changes. Exiting."
   fi
 }
 
-# Build and present cleanup actions for operator review.
-#
-# Scans the filesystem for sensitive data that should be removed
-# from template images (SSH keys, history, machine IDs, etc).
-# Presents a dry-run summary and prompts for confirmation.
-# IMPORTANT: This function only prepares the cleanup list and
-# seeks confirmation. No files are modified or deleted here.
-#
-# Outputs:
-#   Populates CLEANUP_FILES and CLEANUP_TRUNCATE arrays
-#   Dry-run summary of files to be removed/truncated
-#   Interactive prompt for operator confirmation
-#
-# Exit status:
-#   0 if operator approves cleanup
-#   1 if operator declines cleanup
+# Set system timezone to Australia/Perth.
+set_timezone() {
+  step "Setting timezone to Australia/Perth ..."
+  if command -v timedatectl &> /dev/null; then
+    timedatectl set-timezone Australia/Perth
+  else
+    ln -sf /usr/share/zoneinfo/Australia/Perth /etc/localtime
+    echo "Australia/Perth" > /etc/timezone
+  fi
+  date
+}
 
+# Regenerate SSH host keys and conditionally restart sshd.
+regenerate_ssh_keys() {
+  step "Regenerating SSH host keys ..."
+  rm -f /etc/ssh/ssh_host_*
+  ssh-keygen -A
+  
+  # Restart sshd if systemctl is available and functional
+  if command -v systemctl &> /dev/null && systemctl is-system-running &> /dev/null; then
+    systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+  fi
+}
+
+# Build cleanup lists and prompt for operator confirmation. See FUNCTIONS.md.
 cleanup_prepare() {
   section "Preparing Cleanup Actions"
 
@@ -930,30 +748,13 @@ cleanup_prepare() {
 
   # Prompt for confirmation
   step "--------------------------------------------------"
-  read -rp "Do you want to proceed with the cleanup? This is irreversible! Type 'y' to proceed, anything else to exit: " confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    error "Cleanup operation cancelled by operator. Exiting."
-    exit 1
-  fi
+  require_confirm "Do you want to proceed with the cleanup? This is irreversible!" "Cleanup operation cancelled by operator. Exiting."
 
   step "Operator confirmed cleanup actions."
 }
 
 # Apply confirmed cleanup actions.
-#
-# Removes or truncates files identified by cleanup_prepare().
-# IRREVERSIBLE: Permanently deletes sensitive data including
-# SSH keys, shell history, and user data. Only runs after
-# explicit operator confirmation from cleanup_prepare().
-#
-# Outputs:
-#   Progress messages for each cleanup action
-#   Verification results via step() calls
-#
-# Exit status:
-#   0 on successful cleanup
-#   1 if any cleanup operations fail
-
+# Apply confirmed cleanup actions (removes/truncates sensitive files).
 cleanup_apply() {
   section "Applying Cleanup Actions"
 
@@ -1008,142 +809,78 @@ cleanup_apply() {
   step "Cleanup actions completed successfully."
 }
 
-configure_rhel() {
-  section "Configuring System Settings (RHEL)"
-
-  step "Current keyboard layout:"
-  localectl status
-  
-  step "Available keyboard layouts can be listed with: localectl list-keymaps"
-  read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
-  if [[ -n "$keymap" ]]; then
-    if localectl list-keymaps | grep -qx "$keymap"; then
-      localectl set-keymap "$keymap"
-      step "Keyboard layout set to $keymap."
-    else
-      error "Invalid keymap: $keymap. Run 'localectl list-keymaps' to see available options."
-      read -rp "Continue with current keyboard layout? Type 'y' to continue, anything else to exit: " cont
-      if [[ "$cont" != "y" && "$cont" != "Y" ]]; then
-        exit 1
+# Configure keyboard layout (OS-specific).
+configure_keyboard() {
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    step "Current keyboard layout:"
+    localectl status
+    step "Available keyboard layouts can be listed with: localectl list-keymaps"
+    read -rp "Enter keyboard layout (e.g., us, uk, de) or press Enter to keep current: " keymap
+    if [[ -n "$keymap" ]]; then
+      if localectl list-keymaps | grep -qx "$keymap"; then
+        localectl set-keymap "$keymap"
+        step "Keyboard layout set to $keymap."
+      else
+        error "Invalid keymap: $keymap. Run 'localectl list-keymaps' to see available options."
+        confirm "Continue with current keyboard layout?" || exit 1
+        step "Keeping current keyboard layout."
       fi
+    else
       step "Keeping current keyboard layout."
     fi
   else
-    step "Keeping current keyboard layout."
+    step "Running keyboard configuration ..."
+    dpkg-reconfigure keyboard-configuration
   fi
+}
 
-  set_host
-
-  step "Setting timezone to Australia/Perth ..."
-  timedatectl set-timezone Australia/Perth
-  date
-
+# Configure locale to en_AU.UTF-8 (OS-specific).
+configure_locale() {
   step "Setting locale to en_AU.UTF-8 ..."
-  if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
-    step "Installing Australian English language pack ..."
-    if [[ "$PKG_MGR" == "yum" ]]; then
-      yum reinstall -y glibc-common || yum install -y glibc-common || true
-      localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
-    else
-      $PKG_MGR install -y glibc-langpack-en || true
+  if [[ "$OS_TYPE" == "rhel" ]]; then
+    if ! locale -a 2>/dev/null | grep -qi "en_AU"; then
+      step "Installing Australian English language pack ..."
+      if [[ "$PKG_MGR" == "yum" ]]; then
+        yum reinstall -y glibc-common || yum install -y glibc-common || true
+        localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+      else
+        $PKG_MGR install -y glibc-langpack-en || true
+      fi
     fi
+    localectl set-locale LANG=en_AU.UTF-8
+  else
+    if [[ -f /etc/locale.gen ]]; then
+      sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
+    fi
+    if command -v locale-gen &> /dev/null; then
+      locale-gen en_AU.UTF-8
+    else
+      localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
+    fi
+    update-locale LANG=en_AU.UTF-8
   fi
-  localectl set-locale LANG=en_AU.UTF-8
-
-  step "Regenerating SSH host keys ..."
-  rm -f /etc/ssh/ssh_host_*
-  ssh-keygen -A
-  systemctl restart sshd
-
-  step "Configuration complete. Locale changes take effect on next login."
 }
 
-configure_debian() {
-  section "Configuring System Settings (Debian/Ubuntu)"
+# Configure system settings (keyboard, hostname, timezone, locale, SSH keys).
+configure_system() {
+  section "Configuring System Settings"
 
-  step "Running keyboard configuration ..."
-  dpkg-reconfigure keyboard-configuration
-
+  configure_keyboard
   set_host
-
-  step "Setting timezone to Australia/Perth ..."
-  if command -v timedatectl &> /dev/null; then
-    timedatectl set-timezone Australia/Perth
-  else
-    ln -sf /usr/share/zoneinfo/Australia/Perth /etc/localtime
-    echo "Australia/Perth" > /etc/timezone
-  fi
-  date
-
-  step "Setting locale to en_AU.UTF-8 ..."
-  if [[ -f /etc/locale.gen ]]; then
-    sed -i 's/^# *en_AU.UTF-8/en_AU.UTF-8/' /etc/locale.gen
-  fi
-  if command -v locale-gen &> /dev/null; then
-    locale-gen en_AU.UTF-8
-  else
-    localedef -i en_AU -f UTF-8 en_AU.UTF-8 || true
-  fi
-  update-locale LANG=en_AU.UTF-8
-
-  step "Regenerating SSH host keys ..."
-  rm -f /etc/ssh/ssh_host_*
-  if dpkg -l openssh-server &> /dev/null; then
-    dpkg-reconfigure openssh-server
-  else
-    ssh-keygen -A
-  fi
+  set_timezone
+  configure_locale
+  regenerate_ssh_keys
 
   step "Configuration complete. Locale changes take effect on next login."
 }
 
 
-# Ensure systemd journal directory exists and is properly configured (systemd-based systems only).
-#
-# This function runs on systemd-based systems:
-#   - Ubuntu 15.04 and newer (systemd-based)
-#   - Debian 8 (Jessie) and newer (systemd-based)
-#
-# It creates /run/log/journal if missing, restores correct permissions using systemd-tmpfiles,
-# and restarts systemd-journald. This prevents errors like "Failed to open runtime journal"
-# on boot, especially in cloned or templated VMs.
-#
-# On older versions (Ubuntu 14.04 Upstart-based, or Debian 7 and older), this function is skipped.
-#
-# Outputs:
-#   Logs progress via section() and step() calls
-#   Displays any errors encountered
-#
-# Exit status:
-#   0 on success or if skipped due to unsupported version
-#   Non-zero if any command fails on supported versions
-
+# Ensure systemd journal is properly configured (skipped on pre-systemd systems).
 journal() {
   section "Ensuring machine-id and systemd journal is properly configured"
 
-  # Only run on systemd-based systems
-  if [[ -z "$VERSION_ID" || -z "$OS_TYPE" ]]; then
-    error "VERSION_ID or OS_TYPE not set. Run setup() first. Skipping journal setup."
-    return 0
-  fi
-  
-  local major_version="${VERSION_ID%%.*}"
-  local skip_journal=false
-  
-  if [[ "$OS_TYPE" == "ubuntu" ]]; then
-    if [[ "$major_version" -lt 15 ]]; then
-      step "Ubuntu $VERSION_ID detected (Upstart-based, no systemd). Skipping journal setup."
-      skip_journal=true
-    fi
-  elif [[ "$OS_TYPE" == "debian" ]]; then
-    if [[ "$major_version" -lt 8 ]]; then
-      step "Debian $VERSION_ID detected (no systemd). Skipping journal setup."
-      skip_journal=true
-    fi
-  fi
-  # RHEL 8+ always has systemd, no skip needed
-  
-  if $skip_journal; then
+  if ! $HAS_SYSTEMD; then
+    step "Pre-systemd OS detected. Skipping journal setup."
     return 0
   fi
 
@@ -1168,18 +905,7 @@ journal() {
   step "Journal configuration completed."
 }
 
-# Generate final summary and recovery instructions.
-#
-# Provides a concise summary of all actions performed, lists
-# created backups, and suggests post-run verification steps.
-# Includes recovery hints if any issues were detected.
-#
-# Outputs:
-#   Summary of backups created (from BACKUPS array)
-#
-# Exit status:
-#   0 always
-
+# Display summary of backups created during this run.
 report() {
   step "Backups created during this run:"
   if [[ ${#BACKUPS[@]} -eq 0 ]]; then
@@ -1195,69 +921,47 @@ report() {
 post_run_action() {
   section "Nearly done"
   step "Clearing artifacts ..."
-  rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null && history -c
+  rm -f rackmill.sh .bash_history ~/.bash_history /root/.bash_history /home/*/.bash_history 2>/dev/null || true
+  # Prevent bash from saving history on exit
+  unset HISTFILE
+  export HISTFILE=
+  export HISTSIZE=0
+  history -c
   sync
 
   step "Reboot or shutdown"
   read -rp "[r] reboot | [s] shutdown | [*] neither: " choice
   case "$choice" in
     r|R)
-      nohup reboot &>/dev/null &
-      exit 0
+      # Use exec to replace the shell process entirely, preventing any history save
+      exec reboot
       ;;
     s|S)
-      nohup shutdown -h now &>/dev/null &
-      exit 0
+      exec shutdown -h now
       ;;
     *)
-      step "Cool."
+      echo "Cool."
       ;;
   esac
 }
 
-# Main conductor function that orchestrates the setup process.
-#
-# Calls all functions in the prescribed order, manages error
-# handling and shell state restoration via traps. Ensures
-# predictable flow and clear error messages on failure.
-#
-# Execution order:
-#   1. setup()                  - Detect OS type and version
-#   2. journal()                - Ensure systemd journal is healthy
-#   3. *_repos_prepare()        - Audit package repositories
-#   4. configure_rhel/debian()  - Set timezone, locale, hostname, keyboard, regenerate SSH keys
-#   5. update_packages()        - Update and upgrade system packages
-#   6. cloud_init_install()     - Install cloud-init for template provisioning
-#   7. cleanup_prepare/apply()  - Wipe SSH keys, logs, machine-id for clean template
-#   8. report()                 - Show backups created
-#   9. post_run_action()        - Offer reboot/shutdown
-#
-# Outputs:
-#   All output from called functions
-#   Fatal error messages on unexpected failures
-#
-# Returns:
-#   0 on successful completion
-#   Non-zero exit code on any fatal error
-
+# Main conductor function - orchestrates the full setup flow. See FUNCTIONS.md.
 main() {
-  # Trap to catch errors and report (shows line number and failing command)
-  trap 'error "Fatal error on line $LINENO: $BASH_COMMAND" ; exit 1' ERR
-
   setup
   
   # Ensure journal infrastructure is healthy for logging during script execution
   journal
 
-  # OS-specific: repository setup and configuration
+  # OS-specific: repository setup
   if [[ "$OS_TYPE" == "rhel" ]]; then
     rhel_repos_prepare
-    configure_rhel
   else
     apt_sources_prepare
     apt_sources_apply
-    configure_debian
   fi
+
+  # Common: system configuration
+  configure_system
 
   # Common: package updates and cloud-init
   update_packages
