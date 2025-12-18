@@ -957,11 +957,14 @@ cleanup_prepare() {
 cleanup_apply() {
   section "Applying Cleanup Actions"
 
-  # Stop systemd-journald before removing journal files (RHEL/systemd systems)
+  # Stop systemd-journald and flush before removing journal files
   # This prevents "Directory not empty" errors from active journal writes
   if command -v systemctl &> /dev/null && systemctl is-active --quiet systemd-journald 2>/dev/null; then
     step "Stopping systemd-journald to allow journal cleanup ..."
-    systemctl stop systemd-journald systemd-journald.socket systemd-journald-dev-log.socket 2>/dev/null || true
+    journalctl --rotate 2>/dev/null || true
+    journalctl --vacuum-time=1s 2>/dev/null || true
+    systemctl stop systemd-journald.socket systemd-journald-dev-log.socket systemd-journald 2>/dev/null || true
+    sleep 1
   fi
 
   # Remove files matching patterns
@@ -970,7 +973,7 @@ cleanup_apply() {
     for pattern in "${CLEANUP_FILES[@]}"; do
       if compgen -G "$pattern" > /dev/null 2>&1; then
         # shellcheck disable=SC2086
-        rm -rf $pattern
+        rm -rf $pattern 2>/dev/null || true
         echo "✅ removed: $pattern"
       else
         echo "🦘 no files found matching $pattern. Skipping."
