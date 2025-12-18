@@ -35,13 +35,13 @@ While the script runs, follow the interactive prompts to review and confirm each
 
 ```bash
 clear; cd ~
-curl -fsSL https://github.com/rackmill/rackmill.sh/raw/refs/heads/main/rackmill.sh -o rackmill.sh && chmod +x rackmill.sh && sudo ./rackmill.sh
+curl -fsSL https://github.com/rackmill/rackmill.sh/raw/refs/heads/main/rackmill.sh -o rackmill.sh && chmod +x rackmill.sh && ./rackmill.sh
 ```
 
 **Alternative (if curl is unavailable):**
 ```bash
 clear; cd ~
-wget https://github.com/rackmill/rackmill.sh/raw/refs/heads/main/rackmill.sh -O rackmill.sh && chmod +x rackmill.sh && sudo ./rackmill.sh
+wget https://github.com/rackmill/rackmill.sh/raw/refs/heads/main/rackmill.sh -O rackmill.sh && chmod +x rackmill.sh && ./rackmill.sh
 ```
 
 ## Manual Setup (If Quick Start is not possible)
