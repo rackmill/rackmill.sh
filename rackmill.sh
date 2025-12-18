@@ -429,10 +429,9 @@ apt_sources_prepare() {
   # For deb822 systems: if canonical file doesn't exist but sources.list does, offer migration
   if $is_deb822 && [[ ! -f "$canonical_file" ]] && [[ -f /etc/apt/sources.list ]]; then
     if grep -qE '^\s*deb ' /etc/apt/sources.list; then
-      warn "deb822 format is recommended for ${OS_TYPE^} ${VERSION_MAJOR}, but $canonical_file does not exist."
-      warn "Found active sources in /etc/apt/sources.list instead."
+      step "$canonical_file not found. /etc/apt/sources.list contains deb lines."
       local confirm
-      read -rp "Create $canonical_file and migrate from sources.list? Type 'y' to proceed, anything else to exit: " confirm
+      read -rp "Create $canonical_file and backup sources.list? Type 'y' to proceed, anything else to exit: " confirm
       if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         step "Creating $canonical_file..."
         if [[ "$OS_TYPE" == "debian" ]]; then
@@ -452,10 +451,10 @@ EOF
         fi
         step "Backing up /etc/apt/sources.list to /etc/apt/sources.list.bak..."
         mv /etc/apt/sources.list /etc/apt/sources.list.bak
-        step "Migration complete. Running apt update to verify..."
+        step "Running apt update..."
         apt update
       else
-        error "Cannot proceed without deb822 sources. Please create $canonical_file manually or run 'apt modernize-sources' (apt 3.1+)."
+        error "Exiting. Create $canonical_file manually to proceed."
         exit 1
       fi
     fi
